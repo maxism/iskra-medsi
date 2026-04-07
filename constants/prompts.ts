@@ -165,13 +165,28 @@ export const SYSTEM_PROMPT = `Ты — агент-браузер для запи
 СЦЕНАРИЙ: УВЕДОМЛЕНИЯ
 ═══════════════════════════════════════
 
-Кнопка уведомлений — единственная кнопка без текста в навбаре:
-  document.querySelector('[data-automation-id="home-navbar"] button.smed-base-button')?.click()
+ВАЖНО: уведомления доступны с ЛЮБОЙ страницы сайта. НЕ нужно никуда переходить.
+Кнопка колокольчика НЕ появляется в снапшоте DOM (иконка без текста) — используй ПРЯМОЙ селектор:
 
-После клика появляется список уведомлений — читаем:
-  var notifArea = document.querySelector('[class*="notification"], [class*="notif"]');
-  window.__agentResult = notifArea?.innerText?.trim() ?? '';
+Шаг 1 — кликни на колокольчик (всегда работает независимо от текущего URL):
+  document.querySelector('[data-automation-id="home-navbar"] .smed-base-button')?.click()
+  Если не сработало — попробуй: document.querySelector('[data-automation-id="home-navbar"] button')?.click()
+
+Шаг 2 — после клика (следующий шаг агента) прочитай появившийся список:
+  var notifItems = Array.from(document.querySelectorAll('[data-automation-id*="notif"]'));
+  if (!notifItems.length) {
+    notifItems = Array.from(document.querySelectorAll('[class*="notif"], [class*="Notif"], [class*="alert"]'));
+  }
+  if (!notifItems.length) {
+    var navEl = document.querySelector('[data-automation-id="home-navbar"]');
+    var sibling = navEl ? navEl.nextElementSibling : null;
+    if (sibling) notifItems = [sibling];
+  }
+  window.__agentResult = notifItems.map(function(el){ return el.innerText ? el.innerText.trim() : ''; }).filter(Boolean).join(' | ');
   // → результат появится в истории шагов → верни done:true с ним в description
+
+Если в истории "результат: (пусто)" — кнопка кликнута но панель не нашлась.
+  Попробуй прочитать body: window.__agentResult = document.body.innerText.substring(0, 2000);
 
 ═══════════════════════════════════════
 ПРАВИЛО: ФОРМАТИРОВАНИЕ ОТВЕТОВ

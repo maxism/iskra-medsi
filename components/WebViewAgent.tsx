@@ -104,8 +104,10 @@ const BOOTSTRAP_SCRIPT = `
           if (rect.width === 0 || rect.height === 0) continue;
           var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
           var placeholder = el.placeholder || '';
-          // Skip elements with no useful content
-          if (!text && !placeholder && !el.id && !el.getAttribute('name') && !autoId) continue;
+          // Always keep buttons/anchors (even icon-only ones like the notification bell)
+          var isClickable = el.tagName === 'BUTTON' || el.tagName === 'A';
+          // Skip non-interactive elements with no useful content
+          if (!isClickable && !text && !placeholder && !el.id && !el.getAttribute('name') && !autoId) continue;
           // Deduplicate by text+autoId
           var key = el.tagName + '|' + text + '|' + placeholder + '|' + autoId;
           if (seen[key]) continue;
@@ -134,6 +136,27 @@ const BOOTSTRAP_SCRIPT = `
   });
 
   true;
+})();
+`;
+
+/**
+ * Runs after every page load (injectedJavaScript).
+ * Locks the viewport so iOS WKWebView never auto-zooms on input focus.
+ * SmartMed's own viewport meta is overwritten — the SPA still works fine,
+ * it just can't be pinch-zoomed or auto-zoomed by the OS keyboard heuristic.
+ */
+const ZOOM_LOCK_SCRIPT = `
+(function() {
+  var content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+  var existing = document.querySelector('meta[name="viewport"]');
+  if (existing) {
+    existing.setAttribute('content', content);
+  } else if (document.head) {
+    var m = document.createElement('meta');
+    m.name = 'viewport';
+    m.setAttribute('content', content);
+    document.head.appendChild(m);
+  }
 })();
 `;
 
@@ -238,7 +261,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
         source={{ uri: 'https://smartmed.pro/appointment?city=moscow' }}
         style={styles.webview}
         injectedJavaScriptBeforeContentLoaded={fullPreloadScript}
-        injectedJavaScript={BOOTSTRAP_SCRIPT}
+        injectedJavaScript={ZOOM_LOCK_SCRIPT + BOOTSTRAP_SCRIPT}
         onMessage={handleMessage}
         onNavigationStateChange={(navState) => {
           if (navState.url) {

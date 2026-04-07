@@ -161,7 +161,10 @@ export async function generateAction(
   const historyText = history.length > 0
     ? `\nИстория шагов:\n${history.map((h) => {
         const status = h.success ? '✓' : `✗ ошибка: ${h.error ?? 'неизвестно'}`;
-        const valueLine = h.value ? `\n   результат: ${h.value}` : '';
+        // Show even empty results so the LLM knows extraction ran but found nothing
+        const valueLine = h.value != null
+          ? `\n   результат: ${h.value.length > 0 ? h.value : '(пусто — элемент не найден на странице)'}`
+          : '';
         return `${h.step}. [${h.url}] ${h.description} — ${status}\n   код: ${h.code}${valueLine}`;
       }).join('\n')}`
     : '';
