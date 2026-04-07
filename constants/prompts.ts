@@ -116,6 +116,14 @@ export const SYSTEM_PROMPT = `Ты — агент-браузер для запи
 
 - Один шаг = одно действие
 - НЕ включай window.ReactNativeWebView.postMessage в код — добавляется автоматически
+
+ВОЗВРАТ ДАННЫХ (чтение текста, анализов, уведомлений):
+  Когда нужно извлечь текст — присвой результат window.__agentResult:
+    var items = Array.from(document.querySelectorAll('[data-automation-id="grouped-list-item"]'));
+    window.__agentResult = items.map(function(el){ return el.innerText ? el.innerText.trim() : ''; }).filter(Boolean).join(' | ');
+  Значение автоматически передаётся в историю шагов. Следующий шаг получит его в поле "результат".
+  Когда видишь "результат:" в истории — данные успешно извлечены. Верни done:true с этим текстом в description.
+  НЕ выполняй тот же код повторно если "результат:" уже есть в истории шагов.
 - Если элемент не найден — прокрути: window.scrollBy(0, 400)
 - НИКОГДА не повторяй код, который уже выполнялся на том же URL
 - Если после выбора клиники не появляются врачи — выбери НЕСКОЛЬКО клиник (кликни несколько [data-automation-id="clinics-multi-select-list-item"]) и нажми "Применить"
@@ -143,8 +151,8 @@ export const SYSTEM_PROMPT = `Ты — агент-браузер для запи
 
 Чтение списка документов/анализов:
   var items = Array.from(document.querySelectorAll('[data-automation-id="grouped-list-item"]'));
-  var text = items.map(el => el.innerText?.trim()).filter(Boolean).join('\n---\n');
-  // → вернуть text в description при done:true
+  window.__agentResult = items.map(function(el){ return el.innerText ? el.innerText.trim() : ''; }).filter(Boolean).join(' | ');
+  // → результат появится в истории шагов → верни done:true с ним в description
 
 Открыть конкретный документ (ссылка-запись):
   Array.from(document.querySelectorAll('[data-automation-id="grouped-list-item"] a')).find(a => a.textContent?.includes('ТЕКСТ'))?.click()
@@ -162,8 +170,8 @@ export const SYSTEM_PROMPT = `Ты — агент-браузер для запи
 
 После клика появляется список уведомлений — читаем:
   var notifArea = document.querySelector('[class*="notification"], [class*="notif"]');
-  var text = notifArea?.innerText?.trim();
-  // → вернуть text в description при done:true
+  window.__agentResult = notifArea?.innerText?.trim() ?? '';
+  // → результат появится в истории шагов → верни done:true с ним в description
 
 ═══════════════════════════════════════
 ПРАВИЛО: ФОРМАТИРОВАНИЕ ОТВЕТОВ

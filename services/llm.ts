@@ -20,6 +20,21 @@ function getTimeout(): number {
 // Log config once on startup so it's visible in Metro logs
 console.log('[LLM] Config →', { url: BASE_URL, model: MODEL, keySet: API_KEY !== 'ollama' });
 
+/**
+ * Returns a one-line date context injected at the top of every system prompt.
+ * The model has a training cutoff and doesn't know the real date — we tell it explicitly.
+ */
+function buildDateContext(): string {
+  const now = new Date();
+  const formatted = now.toLocaleDateString('ru-RU', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+  return `Сегодня: ${formatted}. Текущий год: ${now.getFullYear()}.`;
+}
+
 function wrapNetworkError(err: unknown, url: string): Error {
   const msg = err instanceof Error ? err.message : String(err);
   if (msg.includes('Network request failed') || msg.includes('timed out') || msg.includes('Failed to fetch')) {
@@ -72,9 +87,11 @@ export async function classifyMessage(text: string): Promise<Classification> {
   // Retrieve relevant context to help with classification and direct answers
   const chunks = retrieveContext(text, 4);
   const contextBlock = formatContextForPrompt(chunks);
-  const systemWithContext = contextBlock
-    ? `${CLASSIFY_PROMPT}\n\n${contextBlock}`
-    : CLASSIFY_PROMPT;
+  const systemWithContext = [
+    buildDateContext(),
+    CLASSIFY_PROMPT,
+    contextBlock,
+  ].filter(Boolean).join('\n\n');
 
   const endpoint = `${BASE_URL}/chat/completions`;
   try {
@@ -131,6 +148,8 @@ export interface StepHistory {
   code: string;
   success: boolean;
   error?: string;
+  /** Value returned via window.__agentResult — shown to LLM so it knows what was read */
+  value?: string;
 }
 
 export async function generateAction(
@@ -140,9 +159,11 @@ export async function generateAction(
   history: StepHistory[] = [],
 ): Promise<AgentAction> {
   const historyText = history.length > 0
-    ? `\nИстория шагов:\n${history.map((h) =>
-        `${h.step}. [${h.url}] ${h.description} — ${h.success ? '✓' : `✗ ошибка: ${h.error ?? 'неизвестно'}`}\n   код: ${h.code}`
-      ).join('\n')}`
+    ? `\nИстория шагов:\n${history.map((h) => {
+        const status = h.success ? '✓' : `✗ ошибка: ${h.error ?? 'неизвестно'}`;
+        const valueLine = h.value ? `\n   результат: ${h.value}` : '';
+        return `${h.step}. [${h.url}] ${h.description} — ${status}\n   код: ${h.code}${valueLine}`;
+      }).join('\n')}`
     : '';
 
   // Compact DOM: one line per element
@@ -187,7 +208,7 @@ ${domText}`;
       body: JSON.stringify({
         model: MODEL,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: `${buildDateContext()}\n\n${SYSTEM_PROMPT}` },
           { role: 'user', content: userMessage },
         ],
         max_tokens: 2048,
@@ -205,13 +226,31 @@ ${domText}`;
     };
 
     const raw = (data.choices?.[0]?.message?.content ?? '').trim();
-    const cleaned = raw
-      .replace(/^```(?:json)?\n?/i, '')
-      .replace(/\n?```$/i, '')
+    console.log('[LLM] generateAction raw:', raw.substring(0, 500));
+
+    // Strip markdown code fences if present
+    let cleaned = raw
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
       .trim();
 
-    console.log('[LLM] Raw response:', raw);
-    const parsed = JSON.parse(cleaned) as { description: string; code: string; done: boolean };
+    // If there is text before/after the JSON object, extract just the object
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) cleaned = jsonMatch[0];
+
+    let parsed: { description: string; code: string; done: boolean };
+    try {
+      parsed = JSON.parse(cleaned) as typeof parsed;
+    } catch (parseErr) {
+      console.error('[LLM] JSON parse failed. Raw was:', raw);
+      throw new Error(`LLM вернул невалидный JSON: ${raw.substring(0, 200)}`);
+    }
+
+    // Normalise: ensure required fields exist
+    if (!parsed.description) parsed.description = 'Выполняю действие…';
+    if (parsed.code == null) parsed.code = '';
+    if (typeof parsed.done !== 'boolean') parsed.done = false;
+
     return parsed;
   } catch (err) {
     throw wrapNetworkError(err, endpoint);

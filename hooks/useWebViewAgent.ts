@@ -82,13 +82,13 @@ export function useWebViewAgent(
   }, [webViewRef, waitForMessage]);
 
   const executeJS = useCallback(
-    async (code: string): Promise<{ success: boolean; error?: string }> => {
+    async (code: string): Promise<{ success: boolean; error?: string; value?: string }> => {
       // Each execution gets its own requestId — not tied to LLM generation
       const requestId = makeId();
       webViewRef.current?.injectJS(code, requestId);
       try {
         const msg = await waitForMessage(requestId, 8000);
-        return { success: msg.success ?? false, error: msg.error };
+        return { success: msg.success ?? false, error: msg.error, value: msg.value ?? undefined };
       } catch {
         return { success: false, error: 'Execution timeout' };
       }
@@ -150,6 +150,12 @@ export function useWebViewAgent(
             break;
           }
 
+          // Guard: LLM returned done:false but no executable code
+          if (!action.code || !action.code.trim()) {
+            addMessage('error', 'Агент не сформировал действие. Попробуйте переформулировать запрос.');
+            break;
+          }
+
           // Loop detection: same code on same URL as previous step
           const lastStep = history[history.length - 1];
           if (
@@ -171,6 +177,7 @@ export function useWebViewAgent(
             code: action.code,
             success: result.success,
             error: result.error,
+            value: result.value,
           });
 
           if (!result.success) {

@@ -8,12 +8,17 @@ import { StyleSheet } from 'react-native';
 import WebView, { WebViewMessageEvent } from 'react-native-webview';
 
 export interface WebViewMessage {
-  type: 'result' | 'domSnapshot' | 'log';
+  type: 'result' | 'domSnapshot' | 'log' | 'authSnapshot';
   requestId?: string;
   success?: boolean;
   error?: string;
   snapshot?: DOMElement[];
   message?: string;
+  /** Captured value of window.__agentResult set by agent code */
+  value?: string;
+  /** Auth snapshot fields (type === 'authSnapshot') */
+  cookies?: string;
+  localStorage?: Record<string, string>;
 }
 
 export interface DOMElement {
@@ -31,12 +36,17 @@ export interface DOMElement {
 export interface WebViewAgentRef {
   injectJS: (code: string, requestId?: string) => void;
   captureDOM: (requestId: string) => void;
+  captureAuth: () => void;
   reload: () => void;
   onMessage: (handler: (msg: WebViewMessage) => void) => void;
 }
 
 interface Props {
   onNavigationStateChange?: (url: string) => void;
+  /** Pre-built script to restore localStorage + cookies — runs before page scripts */
+  authRestoreScript?: string;
+  /** Called whenever a captureAuth() snapshot arrives */
+  onAuthSnapshot?: (cookies: string, ls: Record<string, string>) => void;
 }
 
 const BOOTSTRAP_SCRIPT = `
@@ -62,7 +72,22 @@ const BOOTSTRAP_SCRIPT = `
   window.addEventListener('message', function(event) {
     try {
       var data = JSON.parse(event.data);
-      if (data.type === 'captureDOM') {
+      if (data.type === 'captureAuth') {
+        var ls = {};
+        try {
+          for (var i = 0; i < localStorage.length; i++) {
+            var k = localStorage.key(i);
+            if (k) ls[k] = localStorage.getItem(k) || '';
+          }
+        } catch(lsErr) {}
+        var cookies = '';
+        try { cookies = document.cookie; } catch(cErr) {}
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'authSnapshot',
+          cookies: cookies,
+          localStorage: ls
+        }));
+      } else if (data.type === 'captureDOM') {
         var requestId = data.requestId;
         // Standard interactive + SmartMed-specific data-automation-id elements (clinic items, date slots are plain divs)
         var selectors = 'button, input, a, select, textarea, [role="button"], [onclick], [data-automation-id]';
@@ -113,20 +138,27 @@ const BOOTSTRAP_SCRIPT = `
 `;
 
 const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
-  ({ onNavigationStateChange }, ref) => {
+  ({ onNavigationStateChange, authRestoreScript, onAuthSnapshot }, ref) => {
     const webViewRef = useRef<WebView>(null);
     const messageHandlerRef = useRef<((msg: WebViewMessage) => void) | null>(null);
+    const onAuthSnapshotRef = useRef(onAuthSnapshot);
+    onAuthSnapshotRef.current = onAuthSnapshot;
 
     const injectJS = useCallback((code: string, requestId?: string) => {
       const reqJson = JSON.stringify(requestId ?? null);
       const wrappedCode = `
         (function() {
           try {
+            window.__agentResult = undefined;
             ${code}
+            var __val = (window.__agentResult != null)
+              ? String(window.__agentResult).substring(0, 4000)
+              : null;
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'result',
               requestId: ${reqJson},
-              success: true
+              success: true,
+              value: __val
             }));
           } catch(e) {
             window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -155,6 +187,16 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
       webViewRef.current?.injectJavaScript(code);
     }, []);
 
+    const captureAuth = useCallback(() => {
+      const code = `
+        (function() {
+          window.postMessage(JSON.stringify({ type: 'captureAuth' }), '*');
+        })();
+        true;
+      `;
+      webViewRef.current?.injectJavaScript(code);
+    }, []);
+
     const reload = useCallback(() => {
       webViewRef.current?.reload();
     }, []);
@@ -166,6 +208,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     useImperativeHandle(ref, () => ({
       injectJS,
       captureDOM,
+      captureAuth,
       reload,
       onMessage,
     }));
@@ -173,18 +216,28 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     const handleMessage = useCallback((event: WebViewMessageEvent) => {
       try {
         const data: WebViewMessage = JSON.parse(event.nativeEvent.data);
+        // Auth snapshots are handled here directly — not routed to the agent
+        if (data.type === 'authSnapshot') {
+          onAuthSnapshotRef.current?.(data.cookies ?? '', data.localStorage ?? {});
+          return;
+        }
         messageHandlerRef.current?.(data);
       } catch (e) {
         // ignore non-JSON messages
       }
     }, []);
 
+    // Auth restore runs BEFORE page scripts; BOOTSTRAP must also be present
+    const fullPreloadScript = authRestoreScript
+      ? authRestoreScript + '\n' + BOOTSTRAP_SCRIPT
+      : BOOTSTRAP_SCRIPT;
+
     return (
       <WebView
         ref={webViewRef}
         source={{ uri: 'https://smartmed.pro/appointment?city=moscow' }}
         style={styles.webview}
-        injectedJavaScriptBeforeContentLoaded={BOOTSTRAP_SCRIPT}
+        injectedJavaScriptBeforeContentLoaded={fullPreloadScript}
         injectedJavaScript={BOOTSTRAP_SCRIPT}
         onMessage={handleMessage}
         onNavigationStateChange={(navState) => {
@@ -194,6 +247,8 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
         }}
         javaScriptEnabled
         domStorageEnabled
+        // Share cookies with iOS WKHTTPCookieStorage — survives app restarts
+        sharedCookiesEnabled
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
         mixedContentMode="always"
