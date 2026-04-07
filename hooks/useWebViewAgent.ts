@@ -4,8 +4,8 @@ import { WebViewAgentRef, WebViewMessage, DOMElement } from '../components/WebVi
 import { Message, MessageRole } from '../components/ChatMessage';
 import { classifyMessage, generateAction, StepHistory } from '../services/llm';
 
-const MAX_STEPS = 10;
-const PAGE_LOAD_WAIT_MS = 2500;
+const MAX_STEPS = 20;
+const PAGE_LOAD_WAIT_MS = 2000;
 const MAX_CONSECUTIVE_ERRORS = 3;
 
 function makeId(): string {
@@ -108,13 +108,15 @@ export function useWebViewAgent(
       let completed = false;
 
       try {
-        // Classify: chat vs action
+        // Classify: chat vs action vs read
         try {
           const classification = await classifyMessage(text);
           if (classification.type === 'chat') {
             addMessage('agent', classification.response);
             return;
           }
+          // 'action' and 'read' both go through the browser agent loop
+          // 'read' means navigate + extract text; agent returns content in done:true description
         } catch {
           // Classification failed — treat as action
         }

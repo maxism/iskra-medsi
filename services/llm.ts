@@ -1,32 +1,70 @@
 import { DOMElement } from '../components/WebViewAgent';
 import { SYSTEM_PROMPT } from '../constants/prompts';
+import { retrieveContext, formatContextForPrompt } from './knowledge';
 
 const BASE_URL = process.env.EXPO_PUBLIC_LLM_BASE_URL ?? 'http://localhost:11434/v1';
 const API_KEY = process.env.EXPO_PUBLIC_LLM_API_KEY ?? 'ollama';
 const MODEL = process.env.EXPO_PUBLIC_LLM_MODEL ?? 'llama3.2';
-const TIMEOUT_MS = 120_000;
+const TIMEOUT_MS = 60_000;
 
-const CLASSIFY_PROMPT = `Ты классификатор для ассистента медицинской клиники МЕДСИ (medsi.ru).
+// Log config once on startup so it's visible in Metro logs
+console.log('[LLM] Config →', { url: BASE_URL, model: MODEL, keySet: API_KEY !== 'ollama' });
 
-Определи тип запроса пользователя:
-- "action": нужно что-то сделать на сайте — найти клинику, записаться к врачу, заполнить форму, перейти на страницу, найти информацию через навигацию
-- "chat": общий вопрос, приветствие, вопрос о компании/услугах на который можно ответить без браузера
+function wrapNetworkError(err: unknown, url: string): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('Network request failed') || msg.includes('timed out') || msg.includes('Failed to fetch')) {
+    return new Error(
+      `Не удалось подключиться к LLM (${BASE_URL}).\n` +
+      `Проверьте:\n• Сервер запущен?\n• EXPO_PUBLIC_LLM_BASE_URL в .env.local верный?\n• Доступен ли ${url} из симулятора?`
+    );
+  }
+  if (msg.includes('AbortError') || msg.includes('aborted')) {
+    return new Error(`LLM не ответил за ${TIMEOUT_MS / 1000}с. Сервер перегружен или URL неверный: ${BASE_URL}`);
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
+const CLASSIFY_PROMPT = `Ты классификатор для ассистента клиник МЕДСИ.
+
+Архитектура: smartmed.pro — запись, личный кабинет. medsi.ru — справочный сайт (читается из базы знаний, браузер не нужен).
+
+Определи тип запроса:
+- "action": нужно что-то СДЕЛАТЬ в SmartMed — записаться к врачу, выбрать время, найти врача, нажать кнопку
+- "read": нужно ПРОЧИТАТЬ и показать данные из SmartMed — уведомления, анализы, результаты, документы, записи, назначения, направления, медкарта
+- "chat": справочный вопрос — адрес клиники, специальности, цены, часы работы, что такое МЕДСИ — отвечай из базы знаний
+
+Примеры "action": "запишись к врачу", "забронируй время", "открой медкарту", "перейди в раздел".
+Примеры "read": "покажи уведомления", "что в моих анализах", "какие у меня назначения", "покажи мои документы", "последние записи", "результаты анализов".
+Примеры "chat": "где находится клиника", "какие врачи есть", "сколько стоит", "как записаться".
+
+ВАЖНО: chat-ответы пиши обычным текстом БЕЗ markdown — никаких **, ##, |, ---. Только текст и переносы строк.
 
 Ответь ТОЛЬКО валидным JSON (без markdown):
 {"type": "action"}
 или
-{"type": "chat", "response": "ответ на языке пользователя"}`;
+{"type": "read"}
+или
+{"type": "chat", "response": "ответ обычным текстом без markdown"}`;
 
 export type Classification =
   | { type: 'action' }
+  | { type: 'read' }
   | { type: 'chat'; response: string };
 
 export async function classifyMessage(text: string): Promise<Classification> {
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
+  // Retrieve relevant context to help with classification and direct answers
+  const chunks = retrieveContext(text, 4);
+  const contextBlock = formatContextForPrompt(chunks);
+  const systemWithContext = contextBlock
+    ? `${CLASSIFY_PROMPT}\n\n${contextBlock}`
+    : CLASSIFY_PROMPT;
+
+  const endpoint = `${BASE_URL}/chat/completions`;
   try {
-    const response = await fetch(`${BASE_URL}/chat/completions`, {
+    const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -36,7 +74,7 @@ export async function classifyMessage(text: string): Promise<Classification> {
       body: JSON.stringify({
         model: MODEL,
         messages: [
-          { role: 'system', content: CLASSIFY_PROMPT },
+          { role: 'system', content: systemWithContext },
           { role: 'user', content: text },
         ],
         max_tokens: 512,
@@ -57,6 +95,8 @@ export async function classifyMessage(text: string): Promise<Classification> {
     console.log('[LLM] Classification response:', raw);
     const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
     return JSON.parse(cleaned) as Classification;
+  } catch (err) {
+    throw wrapNetworkError(err, endpoint);
   } finally {
     clearTimeout(timerId);
   }
@@ -93,6 +133,7 @@ export async function generateAction(
   const domText = domSnapshot.length > 0
     ? domSnapshot.map((el, i) => {
         const parts: string[] = [`[${i}]<${el.tag}>`];
+        if (el.autoId) parts.push(`autoId="${el.autoId}"`);
         if (el.sel) parts.push(`sel="${el.sel}"`);
         if (el.text) parts.push(`"${el.text}"`);
         if (el.placeholder) parts.push(`placeholder="${el.placeholder}"`);
@@ -102,9 +143,13 @@ export async function generateAction(
       }).join('\n')
     : '(снапшот пуст — страница ещё загружается или нет интерактивных элементов)';
 
+  // Retrieve relevant knowledge for this goal
+  const chunks = retrieveContext(goal, 4);
+  const contextBlock = formatContextForPrompt(chunks);
+
   const userMessage = `Цель: ${goal}
 
-Текущий URL: ${currentUrl}${historyText}
+Текущий URL: ${currentUrl}${historyText}${contextBlock ? '\n\n' + contextBlock : ''}
 
 DOM (интерактивные элементы):
 ${domText}`;
@@ -112,10 +157,11 @@ ${domText}`;
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
+  const endpoint = `${BASE_URL}/chat/completions`;
   try {
-    console.log('[LLM] Request URL:', currentUrl, '| History steps:', history.length);
+    console.log('[LLM] generateAction →', endpoint, '| steps:', history.length);
 
-    const response = await fetch(`${BASE_URL}/chat/completions`, {
+    const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -150,8 +196,9 @@ ${domText}`;
 
     console.log('[LLM] Raw response:', raw);
     const parsed = JSON.parse(cleaned) as { description: string; code: string; done: boolean };
-    console.log('[LLM] Parsed action:', JSON.stringify(parsed, null, 2));
     return parsed;
+  } catch (err) {
+    throw wrapNetworkError(err, endpoint);
   } finally {
     clearTimeout(timerId);
   }

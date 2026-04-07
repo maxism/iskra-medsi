@@ -24,7 +24,8 @@ export interface DOMElement {
   type?: string;
   href?: string;
   name?: string;
-  sel?: string; // unique CSS selector for targeting this element
+  sel?: string;    // unique CSS selector for targeting this element
+  autoId?: string; // data-automation-id — stable SmartMed identifier
 }
 
 export interface WebViewAgentRef {
@@ -63,20 +64,25 @@ const BOOTSTRAP_SCRIPT = `
       var data = JSON.parse(event.data);
       if (data.type === 'captureDOM') {
         var requestId = data.requestId;
-        var selectors = 'button, input, a, select, textarea, [role="button"], [onclick]';
+        // Standard interactive + SmartMed-specific data-automation-id elements (clinic items, date slots are plain divs)
+        var selectors = 'button, input, a, select, textarea, [role="button"], [onclick], [data-automation-id]';
+        // Noise IDs to skip (icons, layout containers with no clickable meaning)
+        var skipAutoIds = { 'smed-svg-icon': true, 'home-navbar': true, 'home-footer': true, 'new-appointment-page': true, 'smed-icon': true, 'smed-base-input-left-icon': true, 'smed-base-input-label': true, 'date-stepper-carousel': true };
         var elements = Array.from(document.querySelectorAll(selectors));
         var seen = {};
         var snapshot = [];
-        for (var i = 0; i < elements.length && snapshot.length < 60; i++) {
+        for (var i = 0; i < elements.length && snapshot.length < 80; i++) {
           var el = elements[i];
+          var autoId = el.getAttribute('data-automation-id') || '';
+          if (autoId && skipAutoIds[autoId]) continue;
           var rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
           var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
           var placeholder = el.placeholder || '';
           // Skip elements with no useful content
-          if (!text && !placeholder && !el.id && !el.getAttribute('name')) continue;
-          // Deduplicate by text
-          var key = el.tagName + '|' + text + '|' + placeholder;
+          if (!text && !placeholder && !el.id && !el.getAttribute('name') && !autoId) continue;
+          // Deduplicate by text+autoId
+          var key = el.tagName + '|' + text + '|' + placeholder + '|' + autoId;
           if (seen[key]) continue;
           seen[key] = true;
           var item = {
@@ -88,6 +94,7 @@ const BOOTSTRAP_SCRIPT = `
           if (el.type) item.type = el.type;
           if (el.href) item.href = el.href.substring(0, 100);
           if (el.getAttribute('name')) item.name = el.getAttribute('name');
+          if (autoId) item.autoId = autoId;
           var sel = getSelector(el);
           if (sel) item.sel = sel;
           snapshot.push(item);
@@ -175,7 +182,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     return (
       <WebView
         ref={webViewRef}
-        source={{ uri: 'https://medsi.ru' }}
+        source={{ uri: 'https://smartmed.pro/appointment?city=moscow' }}
         style={styles.webview}
         injectedJavaScriptBeforeContentLoaded={BOOTSTRAP_SCRIPT}
         injectedJavaScript={BOOTSTRAP_SCRIPT}
