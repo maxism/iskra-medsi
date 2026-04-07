@@ -6,6 +6,7 @@ import { classifyMessage, generateAction, StepHistory } from '../services/llm';
 
 const MAX_STEPS = 10;
 const PAGE_LOAD_WAIT_MS = 2500;
+const MAX_CONSECUTIVE_ERRORS = 3;
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -81,7 +82,9 @@ export function useWebViewAgent(
   }, [webViewRef, waitForMessage]);
 
   const executeJS = useCallback(
-    async (code: string, requestId: string): Promise<{ success: boolean; error?: string }> => {
+    async (code: string): Promise<{ success: boolean; error?: string }> => {
+      // Each execution gets its own requestId — not tied to LLM generation
+      const requestId = makeId();
       webViewRef.current?.injectJS(code, requestId);
       try {
         const msg = await waitForMessage(requestId, 8000);
@@ -101,8 +104,11 @@ export function useWebViewAgent(
       setIsLoading(true);
 
       const history: StepHistory[] = [];
+      let consecutiveErrors = 0;
+      let completed = false;
 
       try {
+        // Classify: chat vs action
         try {
           const classification = await classifyMessage(text);
           if (classification.type === 'chat') {
@@ -110,11 +116,11 @@ export function useWebViewAgent(
             return;
           }
         } catch {
-          // if classification fails, treat as action
+          // Classification failed — treat as action
         }
 
         for (let step = 0; step < MAX_STEPS; step++) {
-          // Capture current DOM
+          // Capture DOM snapshot
           let domSnapshot: DOMElement[] = [];
           try {
             domSnapshot = await captureDOM();
@@ -122,31 +128,64 @@ export function useWebViewAgent(
             // proceed with empty snapshot
           }
 
-          // Ask LLM what to do next
-          const requestId = makeId();
+          // Ask LLM for next action
           const action = await generateAction(
             text,
             domSnapshot,
             currentUrlRef.current,
-            requestId,
             history,
           );
 
           addMessage('agent', action.description);
 
-          if (action.done) break;
-
-          // Execute the action
-          const result = await executeJS(action.code, requestId);
-          history.push({ description: action.description, success: result.success });
-
-          if (!result.success) {
-            addMessage('error', `Ошибка на шаге ${step + 1}: ${result.error ?? 'неизвестная ошибка'}`);
+          if (action.done) {
+            completed = true;
             break;
           }
 
-          // Wait for page to load after action
+          // Loop detection: same code on same URL as previous step
+          const lastStep = history[history.length - 1];
+          if (
+            lastStep &&
+            lastStep.code === action.code &&
+            lastStep.url === currentUrlRef.current
+          ) {
+            addMessage('error', 'Агент повторяет одно и то же действие. Попробуйте переформулировать задачу.');
+            break;
+          }
+
+          // Execute the action (requestId is internal, LLM doesn't see it)
+          const result = await executeJS(action.code);
+
+          history.push({
+            step: step + 1,
+            url: currentUrlRef.current,
+            description: action.description,
+            code: action.code,
+            success: result.success,
+            error: result.error,
+          });
+
+          if (!result.success) {
+            consecutiveErrors++;
+            addMessage('error', `Шаг ${step + 1}: ${result.error ?? 'неизвестная ошибка'}`);
+            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              addMessage('error', 'Слишком много ошибок подряд. Попробуйте переформулировать задачу или обновить страницу.');
+              break;
+            }
+            // Don't wait after error — LLM will try a different approach
+            continue;
+          } else {
+            consecutiveErrors = 0;
+          }
+
+          // Wait for page to settle after successful action
           await new Promise<void>((r) => setTimeout(r, PAGE_LOAD_WAIT_MS));
+        }
+
+        // Notify user if max steps reached without completion
+        if (!completed && history.length > 0 && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
+          addMessage('agent', 'Достигнут лимит шагов. Задача может быть не завершена — попробуйте продолжить или уточнить запрос.');
         }
       } catch (err: unknown) {
         const errorMsg = err instanceof Error ? err.message : String(err);

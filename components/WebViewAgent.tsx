@@ -20,11 +20,11 @@ export interface DOMElement {
   tag: string;
   text?: string;
   id?: string;
-  class?: string;
   placeholder?: string;
   type?: string;
   href?: string;
   name?: string;
+  sel?: string; // unique CSS selector for targeting this element
 }
 
 export interface WebViewAgentRef {
@@ -43,39 +43,55 @@ const BOOTSTRAP_SCRIPT = `
   if (window.__agentBootstrapped) return;
   window.__agentBootstrapped = true;
 
+  function getSelector(el) {
+    if (el.id) return '#' + el.id;
+    if (el.getAttribute('name')) return el.tagName.toLowerCase() + '[name="' + el.getAttribute('name') + '"]';
+    if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
+    // Try first unique class
+    var classes = (el.className || '').split(' ').map(function(c){ return c.trim(); }).filter(Boolean);
+    for (var i = 0; i < classes.length; i++) {
+      var sel = el.tagName.toLowerCase() + '.' + classes[i];
+      try {
+        if (document.querySelectorAll(sel).length === 1) return sel;
+      } catch(e) {}
+    }
+    return null;
+  }
+
   window.addEventListener('message', function(event) {
     try {
       var data = JSON.parse(event.data);
-      if (data.type === 'execute' && data.code) {
-        try {
-          eval(data.code);
-        } catch (e) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'result',
-            requestId: data.requestId,
-            success: false,
-            error: e.message
-          }));
-        }
-      } else if (data.type === 'captureDOM') {
+      if (data.type === 'captureDOM') {
         var requestId = data.requestId;
         var selectors = 'button, input, a, select, textarea, [role="button"], [onclick]';
         var elements = Array.from(document.querySelectorAll(selectors));
-        var snapshot = elements.slice(0, 50).map(function(el) {
+        var seen = {};
+        var snapshot = [];
+        for (var i = 0; i < elements.length && snapshot.length < 60; i++) {
+          var el = elements[i];
           var rect = el.getBoundingClientRect();
-          var visible = rect.width > 0 && rect.height > 0;
-          if (!visible) return null;
-          return {
+          if (rect.width === 0 || rect.height === 0) continue;
+          var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
+          var placeholder = el.placeholder || '';
+          // Skip elements with no useful content
+          if (!text && !placeholder && !el.id && !el.getAttribute('name')) continue;
+          // Deduplicate by text
+          var key = el.tagName + '|' + text + '|' + placeholder;
+          if (seen[key]) continue;
+          seen[key] = true;
+          var item = {
             tag: el.tagName.toLowerCase(),
-            text: (el.textContent || el.innerText || '').trim().substring(0, 100),
-            id: el.id || undefined,
-            class: el.className || undefined,
-            placeholder: el.placeholder || undefined,
-            type: el.type || undefined,
-            href: el.href || undefined,
-            name: el.name || undefined,
           };
-        }).filter(Boolean);
+          if (text) item.text = text;
+          if (el.id) item.id = el.id;
+          if (placeholder) item.placeholder = placeholder;
+          if (el.type) item.type = el.type;
+          if (el.href) item.href = el.href.substring(0, 100);
+          if (el.getAttribute('name')) item.name = el.getAttribute('name');
+          var sel = getSelector(el);
+          if (sel) item.sel = sel;
+          snapshot.push(item);
+        }
         window.ReactNativeWebView.postMessage(JSON.stringify({
           type: 'domSnapshot',
           requestId: requestId,
@@ -95,14 +111,20 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     const messageHandlerRef = useRef<((msg: WebViewMessage) => void) | null>(null);
 
     const injectJS = useCallback((code: string, requestId?: string) => {
+      const reqJson = JSON.stringify(requestId ?? null);
       const wrappedCode = `
         (function() {
           try {
             ${code}
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              type: 'result',
+              requestId: ${reqJson},
+              success: true
+            }));
           } catch(e) {
             window.ReactNativeWebView.postMessage(JSON.stringify({
               type: 'result',
-              requestId: ${JSON.stringify(requestId ?? null)},
+              requestId: ${reqJson},
               success: false,
               error: e.message
             }));

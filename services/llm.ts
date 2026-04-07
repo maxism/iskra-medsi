@@ -6,16 +6,16 @@ const API_KEY = process.env.EXPO_PUBLIC_LLM_API_KEY ?? 'ollama';
 const MODEL = process.env.EXPO_PUBLIC_LLM_MODEL ?? 'llama3.2';
 const TIMEOUT_MS = 120_000;
 
-const CLASSIFY_PROMPT = `You are a classifier for a medical clinic website assistant (medsi.ru).
+const CLASSIFY_PROMPT = `Ты классификатор для ассистента медицинской клиники МЕДСИ (medsi.ru).
 
-Determine if the user's message is:
-- "action": requests to navigate, click, search, book, fill a form, find something on the website
-- "chat": general questions, info about the company, greetings, or anything not requiring browser interaction
+Определи тип запроса пользователя:
+- "action": нужно что-то сделать на сайте — найти клинику, записаться к врачу, заполнить форму, перейти на страницу, найти информацию через навигацию
+- "chat": общий вопрос, приветствие, вопрос о компании/услугах на который можно ответить без браузера
 
-Respond with ONLY valid JSON (no markdown):
+Ответь ТОЛЬКО валидным JSON (без markdown):
 {"type": "action"}
-or
-{"type": "chat", "response": "your answer in the same language as the user's message"}`;
+или
+{"type": "chat", "response": "ответ на языке пользователя"}`;
 
 export type Classification =
   | { type: 'action' }
@@ -66,43 +66,54 @@ export interface AgentAction {
   description: string;
   code: string;
   done: boolean;
-  requestId: string;
 }
 
 export interface StepHistory {
+  step: number;
+  url: string;
   description: string;
+  code: string;
   success: boolean;
+  error?: string;
 }
 
 export async function generateAction(
   goal: string,
   domSnapshot: DOMElement[],
   currentUrl: string,
-  requestId: string,
   history: StepHistory[] = [],
 ): Promise<AgentAction> {
   const historyText = history.length > 0
-    ? `\nPrevious steps:\n${history.map((h, i) => `${i + 1}. ${h.description} — ${h.success ? 'success' : 'failed'}`).join('\n')}`
+    ? `\nИстория шагов:\n${history.map((h) =>
+        `${h.step}. [${h.url}] ${h.description} — ${h.success ? '✓' : `✗ ошибка: ${h.error ?? 'неизвестно'}`}\n   код: ${h.code}`
+      ).join('\n')}`
     : '';
 
-  const userMessage = `Goal: ${goal}
+  // Compact DOM: one line per element
+  const domText = domSnapshot.length > 0
+    ? domSnapshot.map((el, i) => {
+        const parts: string[] = [`[${i}]<${el.tag}>`];
+        if (el.sel) parts.push(`sel="${el.sel}"`);
+        if (el.text) parts.push(`"${el.text}"`);
+        if (el.placeholder) parts.push(`placeholder="${el.placeholder}"`);
+        if (el.type && el.type !== 'submit') parts.push(`type=${el.type}`);
+        if (el.href) parts.push(`href="${el.href.substring(0, 60)}"`);
+        return parts.join(' ');
+      }).join('\n')
+    : '(снапшот пуст — страница ещё загружается или нет интерактивных элементов)';
 
-Current URL: ${currentUrl}${historyText}
+  const userMessage = `Цель: ${goal}
 
-DOM Snapshot (interactive elements):
-${JSON.stringify(domSnapshot, null, 2)}
+Текущий URL: ${currentUrl}${historyText}
 
-Replace REQUEST_ID in your code with the string "${requestId}"`;
+DOM (интерактивные элементы):
+${domText}`;
 
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    console.log('[LLM] Request:', JSON.stringify({
-      model: MODEL,
-      systemPrompt: SYSTEM_PROMPT.slice(0, 200) + '...',
-      userMessage,
-    }, null, 2));
+    console.log('[LLM] Request URL:', currentUrl, '| History steps:', history.length);
 
     const response = await fetch(`${BASE_URL}/chat/completions`, {
       method: 'POST',
@@ -117,7 +128,7 @@ Replace REQUEST_ID in your code with the string "${requestId}"`;
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userMessage },
         ],
-        max_tokens: 4096,
+        max_tokens: 2048,
         temperature: 0,
       }),
     });
@@ -140,7 +151,7 @@ Replace REQUEST_ID in your code with the string "${requestId}"`;
     console.log('[LLM] Raw response:', raw);
     const parsed = JSON.parse(cleaned) as { description: string; code: string; done: boolean };
     console.log('[LLM] Parsed action:', JSON.stringify(parsed, null, 2));
-    return { ...parsed, requestId };
+    return parsed;
   } finally {
     clearTimeout(timerId);
   }
