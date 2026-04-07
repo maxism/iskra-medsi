@@ -30,7 +30,71 @@ interface Props {
 }
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
-const PANEL_HEIGHT = SCREEN_HEIGHT * 0.55;
+// 2/3 of screen
+const PANEL_HEIGHT = SCREEN_HEIGHT * 0.68;
+
+// MEDSI brand blue (matches smartmed.pro navbar)
+const MEDSI_BLUE = '#0055A5';
+const MEDSI_BLUE_LIGHT = '#1A6FBF';
+
+/** Chat-bubble icon drawn with plain Views — no external deps */
+function ChatBubbleIcon() {
+  return (
+    <View style={iconStyles.wrapper}>
+      {/* Bubble body */}
+      <View style={iconStyles.bubble}>
+        {/* Three dots */}
+        <View style={iconStyles.dotsRow}>
+          <View style={iconStyles.dot} />
+          <View style={iconStyles.dot} />
+          <View style={iconStyles.dot} />
+        </View>
+      </View>
+      {/* Tail triangle at bottom-left of bubble */}
+      <View style={iconStyles.tail} />
+    </View>
+  );
+}
+
+const iconStyles = StyleSheet.create({
+  wrapper: {
+    width: 26,
+    height: 26,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+  },
+  bubble: {
+    width: 26,
+    height: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dotsRow: {
+    flexDirection: 'row',
+    gap: 3,
+    alignItems: 'center',
+  },
+  dot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: MEDSI_BLUE,
+  },
+  tail: {
+    marginLeft: 5,
+    marginTop: -1,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 5,
+    borderRightWidth: 0,
+    borderTopWidth: 6,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#FFFFFF',
+  },
+});
 
 export default function ChatOverlay({
   messages,
@@ -85,27 +149,27 @@ export default function ChatOverlay({
     }
   }, [messages]);
 
-  const displayUrl = currentUrl.length > 45
-    ? currentUrl.substring(0, 45) + '…'
-    : currentUrl;
-
   return (
     <>
-      {/* Floating action button */}
+      {/* ── Floating action button ── */}
       <TouchableOpacity
-        style={styles.fab}
+        style={[styles.fab, isVisible && styles.fabOpen]}
         onPress={togglePanel}
         activeOpacity={0.85}
       >
-        <Text style={styles.fabIcon}>{isVisible ? '✕' : '💬'}</Text>
+        {isVisible ? (
+          <Text style={styles.fabClose}>✕</Text>
+        ) : (
+          <ChatBubbleIcon />
+        )}
       </TouchableOpacity>
 
-      {/* Backdrop */}
+      {/* ── Backdrop ── */}
       {isVisible && (
         <Pressable style={styles.backdrop} onPress={closePanel} />
       )}
 
-      {/* Chat panel */}
+      {/* ── Chat panel ── */}
       <Animated.View
         style={[
           styles.panel,
@@ -115,27 +179,33 @@ export default function ChatOverlay({
       >
         {/* Header */}
         <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.handleBar} />
-            <Text style={styles.urlText} numberOfLines={1}>
-              {displayUrl}
-            </Text>
-          </View>
-          <View style={styles.headerActions}>
-            <TouchableOpacity
-              style={styles.headerBtn}
-              onPress={onRefresh}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text style={styles.headerBtnText}>↺</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.headerBtn}
-              onPress={onClearMessages}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Text style={styles.headerBtnText}>🗑</Text>
-            </TouchableOpacity>
+          {/* Drag handle */}
+          <View style={styles.handleBar} />
+
+          <View style={styles.headerRow}>
+            {/* Brand */}
+            <View style={styles.headerBrand}>
+              <View style={styles.headerDot} />
+              <Text style={styles.headerTitle}>Ассистент МЕДСИ</Text>
+            </View>
+
+            {/* Actions */}
+            <View style={styles.headerActions}>
+              <TouchableOpacity
+                style={styles.headerBtn}
+                onPress={onRefresh}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.headerBtnText}>↺</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.headerBtn}
+                onPress={onClearMessages}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Text style={styles.headerBtnText}>🗑</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -153,7 +223,7 @@ export default function ChatOverlay({
           >
             {messages.length === 0 && (
               <Text style={styles.emptyHint}>
-                Введите команду, например: «Запишись к терапевту»
+                {'Введите команду, например:\n«Запишись к терапевту»'}
               </Text>
             )}
             {messages.map((msg) => (
@@ -161,7 +231,7 @@ export default function ChatOverlay({
             ))}
             {isLoading && (
               <View style={styles.loadingRow}>
-                <ActivityIndicator size="small" color="#0066CC" />
+                <ActivityIndicator size="small" color={MEDSI_BLUE} />
                 <Text style={styles.loadingText}>Обработка…</Text>
               </View>
             )}
@@ -182,7 +252,10 @@ export default function ChatOverlay({
               editable={!isLoading}
             />
             <TouchableOpacity
-              style={[styles.sendBtn, (!inputText.trim() || isLoading) && styles.sendBtnDisabled]}
+              style={[
+                styles.sendBtn,
+                (!inputText.trim() || isLoading) && styles.sendBtnDisabled,
+              ]}
               onPress={handleSend}
               disabled={!inputText.trim() || isLoading}
               activeOpacity={0.8}
@@ -197,35 +270,47 @@ export default function ChatOverlay({
 }
 
 const styles = StyleSheet.create({
+  // ── FAB ──────────────────────────────────
   fab: {
     position: 'absolute',
-    top: 60,
-    right: 20,
+    // Sits just above the Webim chat widget (~80 px from bottom)
+    bottom: 92,
+    right: 16,
     width: 52,
     height: 52,
-    borderRadius: 26,
-    backgroundColor: '#0066CC',
+    borderRadius: 14,        // rounded-square, like modern app icons
+    backgroundColor: MEDSI_BLUE,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 10,
     zIndex: 100,
   },
-  fabIcon: {
-    fontSize: 22,
+  fabOpen: {
+    backgroundColor: MEDSI_BLUE_LIGHT,
+    borderRadius: 26,        // circle when showing ✕
   },
+  fabClose: {
+    fontSize: 18,
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+
+  // ── Backdrop ─────────────────────────────
   backdrop: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.25)',
+    backgroundColor: 'rgba(0,0,0,0.30)',
     zIndex: 99,
   },
+
+  // ── Panel ────────────────────────────────
   panel: {
     position: 'absolute',
     bottom: 0,
@@ -233,28 +318,23 @@ const styles = StyleSheet.create({
     right: 0,
     height: PANEL_HEIGHT,
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
     elevation: 20,
     zIndex: 100,
   },
+
+  // ── Header ───────────────────────────────
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 10,
     paddingBottom: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#E5E5E5',
-  },
-  headerLeft: {
-    flex: 1,
-    gap: 6,
+    borderBottomColor: '#EBEBEB',
   },
   handleBar: {
     width: 36,
@@ -262,25 +342,43 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: '#DDDDDD',
     alignSelf: 'center',
-    marginBottom: 4,
+    marginBottom: 10,
   },
-  urlText: {
-    fontSize: 11,
-    color: '#888888',
-    textAlign: 'center',
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerBrand: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: MEDSI_BLUE,
+  },
+  headerTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#1A1A1A',
+    letterSpacing: 0.1,
   },
   headerActions: {
     flexDirection: 'row',
     gap: 8,
-    marginLeft: 12,
   },
   headerBtn: {
     padding: 4,
   },
   headerBtnText: {
     fontSize: 18,
-    color: '#555555',
+    color: '#666666',
   },
+
+  // ── Body ─────────────────────────────────
   body: {
     flex: 1,
   },
@@ -295,9 +393,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#BBBBBB',
     fontSize: 14,
-    marginTop: 40,
-    paddingHorizontal: 24,
-    lineHeight: 20,
+    marginTop: 48,
+    paddingHorizontal: 32,
+    lineHeight: 22,
   },
   loadingRow: {
     flexDirection: 'row',
@@ -310,13 +408,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#888888',
   },
+
+  // ── Input bar ────────────────────────────
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#E5E5E5',
+    borderTopColor: '#EBEBEB',
     gap: 8,
     backgroundColor: '#FFFFFF',
   },
@@ -337,7 +437,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#0066CC',
+    backgroundColor: MEDSI_BLUE,
     alignItems: 'center',
     justifyContent: 'center',
   },

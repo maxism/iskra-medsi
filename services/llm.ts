@@ -5,7 +5,17 @@ import { retrieveContext, formatContextForPrompt } from './knowledge';
 const BASE_URL = process.env.EXPO_PUBLIC_LLM_BASE_URL ?? 'http://localhost:11434/v1';
 const API_KEY = process.env.EXPO_PUBLIC_LLM_API_KEY ?? 'ollama';
 const MODEL = process.env.EXPO_PUBLIC_LLM_MODEL ?? 'llama3.2';
-const TIMEOUT_MS = 60_000;
+
+// Warm requests: 60s. Cold start (first per session): 150s — Ollama loads model into memory.
+const TIMEOUT_WARM_MS = 60_000;
+const TIMEOUT_COLD_MS = 150_000;
+
+/** True once the first successful LLM response completes for this session. */
+export let isWarmedUp = false;
+
+function getTimeout(): number {
+  return isWarmedUp ? TIMEOUT_WARM_MS : TIMEOUT_COLD_MS;
+}
 
 // Log config once on startup so it's visible in Metro logs
 console.log('[LLM] Config →', { url: BASE_URL, model: MODEL, keySet: API_KEY !== 'ollama' });
@@ -19,7 +29,11 @@ function wrapNetworkError(err: unknown, url: string): Error {
     );
   }
   if (msg.includes('AbortError') || msg.includes('aborted')) {
-    return new Error(`LLM не ответил за ${TIMEOUT_MS / 1000}с. Сервер перегружен или URL неверный: ${BASE_URL}`);
+    const limit = getTimeout() / 1000;
+    return new Error(
+      `LLM не ответил за ${limit}с.\n` +
+      `Попробуйте ещё раз — сервер мог перезагружаться.`
+    );
   }
   return err instanceof Error ? err : new Error(msg);
 }
@@ -53,7 +67,7 @@ export type Classification =
 
 export async function classifyMessage(text: string): Promise<Classification> {
   const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timerId = setTimeout(() => controller.abort(), getTimeout());
 
   // Retrieve relevant context to help with classification and direct answers
   const chunks = retrieveContext(text, 4);
@@ -94,7 +108,9 @@ export async function classifyMessage(text: string): Promise<Classification> {
     const raw = (data.choices?.[0]?.message?.content ?? '').trim();
     console.log('[LLM] Classification response:', raw);
     const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
-    return JSON.parse(cleaned) as Classification;
+    const result = JSON.parse(cleaned) as Classification;
+    isWarmedUp = true; // model responded — mark as warm for this session
+    return result;
   } catch (err) {
     throw wrapNetworkError(err, endpoint);
   } finally {
@@ -155,7 +171,7 @@ DOM (интерактивные элементы):
 ${domText}`;
 
   const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timerId = setTimeout(() => controller.abort(), getTimeout());
 
   const endpoint = `${BASE_URL}/chat/completions`;
   try {

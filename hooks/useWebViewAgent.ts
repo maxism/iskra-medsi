@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefObject } from 'react';
 import { WebViewAgentRef, WebViewMessage, DOMElement } from '../components/WebViewAgent';
 import { Message, MessageRole } from '../components/ChatMessage';
-import { classifyMessage, generateAction, StepHistory } from '../services/llm';
+import { classifyMessage, generateAction, StepHistory, isWarmedUp } from '../services/llm';
 
 const MAX_STEPS = 20;
 const PAGE_LOAD_WAIT_MS = 2000;
@@ -102,6 +102,11 @@ export function useWebViewAgent(
 
       addMessage('user', text);
       setIsLoading(true);
+
+      // Warn user about potential cold-start delay on first request per session
+      if (!isWarmedUp) {
+        addMessage('agent', 'Инициализация модели… первый запрос может занять до 2 минут.');
+      }
 
       const history: StepHistory[] = [];
       let consecutiveErrors = 0;
