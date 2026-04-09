@@ -36,16 +36,23 @@ export default function IndexScreen() {
     currentUrl,
   );
 
+  // Track loading state in a ref so the navigation callback (closure) always sees the latest value
+  const isLoadingRef = useRef(false);
+  isLoadingRef.current = isLoading;
+
   const handleRefresh = useCallback(() => {
     webViewRef.current?.reload();
   }, []);
 
-  // Capture auth after each navigation — delayed so the SPA finishes loading
+  // Capture auth after each navigation — delayed so the SPA finishes loading.
+  // Guard: skip if the agent is currently executing to avoid racing with injectJavaScript calls.
   const handleNavigationStateChange = useCallback((url: string) => {
     setCurrentUrl(url);
     if (captureTimerRef.current) clearTimeout(captureTimerRef.current);
     captureTimerRef.current = setTimeout(() => {
-      webViewRef.current?.captureAuth();
+      if (!isLoadingRef.current) {
+        webViewRef.current?.captureAuth();
+      }
     }, AUTH_CAPTURE_DELAY_MS);
   }, []);
 

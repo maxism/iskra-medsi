@@ -2,13 +2,29 @@ import { DOMElement } from '../components/WebViewAgent';
 import { SYSTEM_PROMPT } from '../constants/prompts';
 import { retrieveContext, formatContextForPrompt } from './knowledge';
 
-const BASE_URL = process.env.EXPO_PUBLIC_LLM_BASE_URL ?? 'http://localhost:11434/v1';
-const API_KEY = process.env.EXPO_PUBLIC_LLM_API_KEY ?? 'ollama';
-const MODEL = process.env.EXPO_PUBLIC_LLM_MODEL ?? 'llama3.2';
+// ── Provider detection ──────────────────────────────────────────────────────
+// If EXPO_PUBLIC_OPENROUTER_API_KEY is set, OpenRouter is used automatically.
+// Otherwise falls back to the local Ollama config.
 
-// Warm requests: 60s. Cold start (first per session): 150s — Ollama loads model into memory.
-const TIMEOUT_WARM_MS = 60_000;
-const TIMEOUT_COLD_MS = 150_000;
+const OPENROUTER_KEY = process.env.EXPO_PUBLIC_OPENROUTER_API_KEY ?? '';
+const IS_OPENROUTER = OPENROUTER_KEY.length > 0;
+
+const BASE_URL = IS_OPENROUTER
+  ? 'https://openrouter.ai/api/v1'
+  : (process.env.EXPO_PUBLIC_LLM_BASE_URL ?? 'http://localhost:11434/v1');
+
+const API_KEY = IS_OPENROUTER
+  ? OPENROUTER_KEY
+  : (process.env.EXPO_PUBLIC_LLM_API_KEY ?? 'ollama');
+
+const MODEL = IS_OPENROUTER
+  ? (process.env.EXPO_PUBLIC_OPENROUTER_MODEL ?? 'anthropic/claude-sonnet-4-6')
+  : (process.env.EXPO_PUBLIC_LLM_MODEL ?? 'llama3.2');
+
+// ── Timeouts ─────────────────────────────────────────────────────────────────
+// OpenRouter responds quickly (no cold start). Ollama needs a long cold start.
+const TIMEOUT_WARM_MS = IS_OPENROUTER ? 30_000 : 60_000;
+const TIMEOUT_COLD_MS = IS_OPENROUTER ? 30_000 : 150_000;
 
 /** True once the first successful LLM response completes for this session. */
 export let isWarmedUp = false;
@@ -18,7 +34,26 @@ function getTimeout(): number {
 }
 
 // Log config once on startup so it's visible in Metro logs
-console.log('[LLM] Config →', { url: BASE_URL, model: MODEL, keySet: API_KEY !== 'ollama' });
+console.log('[LLM] Config →', {
+  provider: IS_OPENROUTER ? 'openrouter' : 'local',
+  url: BASE_URL,
+  model: MODEL,
+  keySet: API_KEY !== 'ollama',
+});
+
+/** Returns the request headers for the active provider. */
+function buildHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${API_KEY}`,
+  };
+  if (IS_OPENROUTER) {
+    // Recommended by OpenRouter for attribution / rate-limit tiers
+    headers['HTTP-Referer'] = 'https://medsi.ru';
+    headers['X-Title'] = 'Iskra-MEDSI';
+  }
+  return headers;
+}
 
 /**
  * Returns a one-line date context injected at the top of every system prompt.
@@ -98,10 +133,7 @@ export async function classifyMessage(text: string): Promise<Classification> {
     const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-      },
+      headers: buildHeaders(),
       body: JSON.stringify({
         model: MODEL,
         messages: [
@@ -204,10 +236,7 @@ ${domText}`;
     const response = await fetch(endpoint, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${API_KEY}`,
-      },
+      headers: buildHeaders(),
       body: JSON.stringify({
         model: MODEL,
         messages: [

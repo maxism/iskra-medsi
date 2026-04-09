@@ -39,6 +39,8 @@ export interface WebViewAgentRef {
   captureAuth: () => void;
   reload: () => void;
   onMessage: (handler: (msg: WebViewMessage) => void) => void;
+  /** Resolves when the WebView finishes loading (onLoadEnd). Resolves immediately if not loading. */
+  waitForPageLoad: (timeoutMs?: number) => Promise<void>;
 }
 
 interface Props {
@@ -58,7 +60,6 @@ const BOOTSTRAP_SCRIPT = `
     if (el.id) return '#' + el.id;
     if (el.getAttribute('name')) return el.tagName.toLowerCase() + '[name="' + el.getAttribute('name') + '"]';
     if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
-    // Try first unique class
     var classes = (el.className || '').split(' ').map(function(c){ return c.trim(); }).filter(Boolean);
     for (var i = 0; i < classes.length; i++) {
       var sel = el.tagName.toLowerCase() + '.' + classes[i];
@@ -69,6 +70,56 @@ const BOOTSTRAP_SCRIPT = `
     return null;
   }
 
+  // Direct DOM capture — called from RN-injected scripts without window.postMessage hop
+  window.__agentCaptureDOM = function(requestId) {
+    try {
+      var selectors = 'button, input, a, select, textarea, [role="button"], [onclick], [data-automation-id]';
+      var skipAutoIds = { 'smed-svg-icon': true, 'home-navbar': true, 'home-footer': true, 'new-appointment-page': true, 'smed-icon': true, 'smed-base-input-left-icon': true, 'smed-base-input-label': true, 'date-stepper-carousel': true };
+      var elements = Array.from(document.querySelectorAll(selectors));
+      var seen = {};
+      var snapshot = [];
+      for (var i = 0; i < elements.length && snapshot.length < 80; i++) {
+        var el = elements[i];
+        var autoId = el.getAttribute('data-automation-id') || '';
+        if (autoId && skipAutoIds[autoId]) continue;
+        var rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
+        var placeholder = el.placeholder || '';
+        var isClickable = el.tagName === 'BUTTON' || el.tagName === 'A';
+        if (!isClickable && !text && !placeholder && !el.id && !el.getAttribute('name') && !autoId) continue;
+        var key = el.tagName + '|' + text + '|' + placeholder + '|' + autoId;
+        if (seen[key]) continue;
+        seen[key] = true;
+        var item = { tag: el.tagName.toLowerCase() };
+        if (text) item.text = text;
+        if (el.id) item.id = el.id;
+        if (placeholder) item.placeholder = placeholder;
+        if (el.type) item.type = el.type;
+        if (el.href) item.href = el.href.substring(0, 100);
+        if (el.getAttribute('name')) item.name = el.getAttribute('name');
+        if (autoId) item.autoId = autoId;
+        var sel = getSelector(el);
+        if (sel) item.sel = sel;
+        snapshot.push(item);
+      }
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'domSnapshot',
+        requestId: requestId,
+        snapshot: snapshot
+      }));
+    } catch(e) {
+      try {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'domSnapshot',
+          requestId: requestId,
+          snapshot: []
+        }));
+      } catch(e2) {}
+    }
+  };
+
+  // Auth capture via window.message listener (RN sends window.postMessage)
   window.addEventListener('message', function(event) {
     try {
       var data = JSON.parse(event.data);
@@ -87,56 +138,11 @@ const BOOTSTRAP_SCRIPT = `
           cookies: cookies,
           localStorage: ls
         }));
-      } else if (data.type === 'captureDOM') {
-        var requestId = data.requestId;
-        // Standard interactive + SmartMed-specific data-automation-id elements (clinic items, date slots are plain divs)
-        var selectors = 'button, input, a, select, textarea, [role="button"], [onclick], [data-automation-id]';
-        // Noise IDs to skip (icons, layout containers with no clickable meaning)
-        var skipAutoIds = { 'smed-svg-icon': true, 'home-navbar': true, 'home-footer': true, 'new-appointment-page': true, 'smed-icon': true, 'smed-base-input-left-icon': true, 'smed-base-input-label': true, 'date-stepper-carousel': true };
-        var elements = Array.from(document.querySelectorAll(selectors));
-        var seen = {};
-        var snapshot = [];
-        for (var i = 0; i < elements.length && snapshot.length < 80; i++) {
-          var el = elements[i];
-          var autoId = el.getAttribute('data-automation-id') || '';
-          if (autoId && skipAutoIds[autoId]) continue;
-          var rect = el.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) continue;
-          var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
-          var placeholder = el.placeholder || '';
-          // Always keep buttons/anchors (even icon-only ones like the notification bell)
-          var isClickable = el.tagName === 'BUTTON' || el.tagName === 'A';
-          // Skip non-interactive elements with no useful content
-          if (!isClickable && !text && !placeholder && !el.id && !el.getAttribute('name') && !autoId) continue;
-          // Deduplicate by text+autoId
-          var key = el.tagName + '|' + text + '|' + placeholder + '|' + autoId;
-          if (seen[key]) continue;
-          seen[key] = true;
-          var item = {
-            tag: el.tagName.toLowerCase(),
-          };
-          if (text) item.text = text;
-          if (el.id) item.id = el.id;
-          if (placeholder) item.placeholder = placeholder;
-          if (el.type) item.type = el.type;
-          if (el.href) item.href = el.href.substring(0, 100);
-          if (el.getAttribute('name')) item.name = el.getAttribute('name');
-          if (autoId) item.autoId = autoId;
-          var sel = getSelector(el);
-          if (sel) item.sel = sel;
-          snapshot.push(item);
-        }
-        window.ReactNativeWebView.postMessage(JSON.stringify({
-          type: 'domSnapshot',
-          requestId: requestId,
-          snapshot: snapshot
-        }));
       }
-    } catch (e) {}
+    } catch(e) {}
   });
-
-  true;
 })();
+true;
 `;
 
 /**
@@ -166,6 +172,8 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     const messageHandlerRef = useRef<((msg: WebViewMessage) => void) | null>(null);
     const onAuthSnapshotRef = useRef(onAuthSnapshot);
     onAuthSnapshotRef.current = onAuthSnapshot;
+    const isPageLoadingRef = useRef(false);
+    const pageLoadResolversRef = useRef<Array<() => void>>([]);
 
     const injectJS = useCallback((code: string, requestId?: string) => {
       const reqJson = JSON.stringify(requestId ?? null);
@@ -184,12 +192,14 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
               value: __val
             }));
           } catch(e) {
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'result',
-              requestId: ${reqJson},
-              success: false,
-              error: e.message
-            }));
+            try {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'result',
+                requestId: ${reqJson},
+                success: false,
+                error: String(e && e.message ? e.message : e)
+              }));
+            } catch(e2) {}
           }
         })();
         true;
@@ -198,12 +208,20 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     }, []);
 
     const captureDOM = useCallback((requestId: string) => {
+      const reqJson = JSON.stringify(requestId);
       const code = `
         (function() {
-          window.postMessage(JSON.stringify({
-            type: 'captureDOM',
-            requestId: ${JSON.stringify(requestId)}
-          }), '*');
+          if (typeof window.__agentCaptureDOM === 'function') {
+            window.__agentCaptureDOM(${reqJson});
+          } else {
+            try {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'domSnapshot',
+                requestId: ${reqJson},
+                snapshot: []
+              }));
+            } catch(e) {}
+          }
         })();
         true;
       `;
@@ -228,12 +246,30 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
       messageHandlerRef.current = handler;
     }, []);
 
+    const waitForPageLoad = useCallback((timeoutMs = 6000): Promise<void> => {
+      // If the WebView is not currently loading a page, resolve immediately.
+      if (!isPageLoadingRef.current) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        // Fallback: always resolve after timeoutMs even if onLoadEnd never fires.
+        const timer = setTimeout(() => {
+          pageLoadResolversRef.current = pageLoadResolversRef.current.filter(fn => fn !== onLoaded);
+          resolve();
+        }, timeoutMs);
+        const onLoaded = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        pageLoadResolversRef.current.push(onLoaded);
+      });
+    }, []);
+
     useImperativeHandle(ref, () => ({
       injectJS,
       captureDOM,
       captureAuth,
       reload,
       onMessage,
+      waitForPageLoad,
     }));
 
     const handleMessage = useCallback((event: WebViewMessageEvent) => {
@@ -261,8 +297,18 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
         source={{ uri: 'https://smartmed.pro/appointment?city=moscow' }}
         style={styles.webview}
         injectedJavaScriptBeforeContentLoaded={fullPreloadScript}
-        injectedJavaScript={ZOOM_LOCK_SCRIPT + BOOTSTRAP_SCRIPT}
+        injectedJavaScript={ZOOM_LOCK_SCRIPT + BOOTSTRAP_SCRIPT + '\ntrue;'}
         onMessage={handleMessage}
+        onLoadStart={() => {
+          isPageLoadingRef.current = true;
+          console.log('[WebView] page load start');
+        }}
+        onLoadEnd={() => {
+          isPageLoadingRef.current = false;
+          console.log('[WebView] page load end');
+          const resolvers = pageLoadResolversRef.current.splice(0);
+          resolvers.forEach(fn => fn());
+        }}
         onNavigationStateChange={(navState) => {
           if (navState.url) {
             onNavigationStateChange?.(navState.url);

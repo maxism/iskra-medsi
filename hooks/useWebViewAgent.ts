@@ -43,22 +43,23 @@ export function useWebViewAgent(
     setMessages([]);
   }, []);
 
+  // Stable handler — pendingRef is a ref so no dep needed
+  const messageHandler = useCallback((msg: WebViewMessage) => {
+    const requestId = msg.requestId;
+    if (!requestId) return;
+    const pending = pendingRef.current.get(requestId);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      pendingRef.current.delete(requestId);
+      pending.resolve(msg);
+    }
+  }, []);
+
+  // Best-effort early registration (works when WebView is mounted on first render,
+  // i.e. when there is no authReady gate or auth loads synchronously).
   useEffect(() => {
-    const ref = webViewRef.current;
-    if (!ref) return;
-
-    ref.onMessage((msg: WebViewMessage) => {
-      const requestId = msg.requestId;
-      if (!requestId) return;
-
-      const pending = pendingRef.current.get(requestId);
-      if (pending) {
-        clearTimeout(pending.timeoutId);
-        pendingRef.current.delete(requestId);
-        pending.resolve(msg);
-      }
-    });
-  }, [webViewRef]);
+    webViewRef.current?.onMessage(messageHandler);
+  }, [webViewRef, messageHandler]);
 
   const waitForMessage = useCallback(
     (requestId: string, timeoutMs = 8000): Promise<WebViewMessage> => {
@@ -77,19 +78,21 @@ export function useWebViewAgent(
   const captureDOM = useCallback(async (): Promise<DOMElement[]> => {
     const requestId = makeId();
     webViewRef.current?.captureDOM(requestId);
-    const msg = await waitForMessage(requestId, 8000);
+    const msg = await waitForMessage(requestId, 10000);
     return msg.snapshot ?? [];
   }, [webViewRef, waitForMessage]);
 
   const executeJS = useCallback(
     async (code: string): Promise<{ success: boolean; error?: string; value?: string }> => {
-      // Each execution gets its own requestId — not tied to LLM generation
       const requestId = makeId();
+      console.log('[Agent] executeJS start', requestId, 'codeLen:', code.length);
       webViewRef.current?.injectJS(code, requestId);
       try {
-        const msg = await waitForMessage(requestId, 8000);
+        const msg = await waitForMessage(requestId, 12000);
+        console.log('[Agent] executeJS done', requestId, 'success:', msg.success, 'error:', msg.error);
         return { success: msg.success ?? false, error: msg.error, value: msg.value ?? undefined };
       } catch {
+        console.error('[Agent] executeJS TIMEOUT', requestId);
         return { success: false, error: 'Execution timeout' };
       }
     },
@@ -99,6 +102,12 @@ export function useWebViewAgent(
   const sendMessage = useCallback(
     async (text: string) => {
       if (isLoading) return;
+
+      // Re-register the message handler every time.
+      // The WebView may have mounted after the initial useEffect ran
+      // (e.g. when an authReady gate delays WebView rendering), so
+      // messageHandlerRef.current could still be null from the effect.
+      webViewRef.current?.onMessage(messageHandler);
 
       addMessage('user', text);
       setIsLoading(true);
@@ -127,6 +136,12 @@ export function useWebViewAgent(
         }
 
         for (let step = 0; step < MAX_STEPS; step++) {
+          // Wait for any in-progress page load before injecting anything.
+          // WKWebView silently drops injectJavaScript calls while the page is loading.
+          console.log('[Agent] step', step + 1, '— waiting for page load...');
+          await webViewRef.current?.waitForPageLoad(6000);
+          console.log('[Agent] step', step + 1, '— page ready, capturing DOM');
+
           // Capture DOM snapshot
           let domSnapshot: DOMElement[] = [];
           try {
@@ -208,7 +223,7 @@ export function useWebViewAgent(
         setIsLoading(false);
       }
     },
-    [isLoading, addMessage, captureDOM, executeJS],
+    [isLoading, addMessage, captureDOM, executeJS, messageHandler, webViewRef],
   );
 
   return { messages, isLoading, sendMessage, clearMessages };

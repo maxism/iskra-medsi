@@ -1,4 +1,4 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 export type MessageRole = 'user' | 'agent' | 'error';
 
@@ -27,25 +27,10 @@ function sanitizeText(raw: string): string {
     .trim();
 }
 
-const LONG_MESSAGE_THRESHOLD = 300;
-
 export default function ChatMessage({ message }: Props) {
   const isUser = message.role === 'user';
   const isError = message.role === 'error';
   const displayText = isUser ? message.text : sanitizeText(message.text);
-  const isLong = displayText.length > LONG_MESSAGE_THRESHOLD;
-
-  const textContent = (
-    <Text
-      style={[
-        styles.text,
-        isUser && styles.textUser,
-        isError && styles.textError,
-      ]}
-    >
-      {displayText}
-    </Text>
-  );
 
   return (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
@@ -55,16 +40,17 @@ export default function ChatMessage({ message }: Props) {
           isUser && styles.bubbleUser,
           isError && styles.bubbleError,
           !isUser && !isError && styles.bubbleAgent,
-          isLong && styles.bubbleLong,
         ]}
       >
-        {isLong ? (
-          <ScrollView style={styles.scrollArea} nestedScrollEnabled>
-            {textContent}
-          </ScrollView>
-        ) : (
-          textContent
-        )}
+        <Text
+          style={[
+            styles.text,
+            isUser && styles.textUser,
+            isError && styles.textError,
+          ]}
+        >
+          {displayText}
+        </Text>
         <Text style={[styles.time, isUser && styles.timeUser]}>
           {new Date(message.timestamp).toLocaleTimeString('ru-RU', {
             hour: '2-digit',
@@ -125,11 +111,5 @@ const styles = StyleSheet.create({
   },
   timeUser: {
     color: 'rgba(255,255,255,0.7)',
-  },
-  bubbleLong: {
-    maxWidth: '92%',
-  },
-  scrollArea: {
-    maxHeight: 320,
   },
 });
