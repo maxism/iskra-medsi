@@ -30,7 +30,7 @@ export interface DOMElement {
   href?: string;
   name?: string;
   sel?: string;    // unique CSS selector for targeting this element
-  autoId?: string; // data-automation-id — stable SmartMed identifier
+  autoId?: string; // data-automation-id or data-testid — stable identifier
 }
 
 export interface WebViewAgentRef {
@@ -294,7 +294,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     return (
       <WebView
         ref={webViewRef}
-        source={{ uri: 'https://smartmed.pro/appointment?city=moscow' }}
+        source={{ uri: 'https://online.mtsdengi.ru/' }}
         style={styles.webview}
         injectedJavaScriptBeforeContentLoaded={fullPreloadScript}
         injectedJavaScript={ZOOM_LOCK_SCRIPT + BOOTSTRAP_SCRIPT + '\ntrue;'}

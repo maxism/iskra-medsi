@@ -1,4 +1,4 @@
-# Project Spec - Iskra MEDSI
+# Project Spec - Iskra MTSBANK
 
 ## Purpose
 

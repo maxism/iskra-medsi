@@ -33,9 +33,9 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 // 2/3 of screen
 const PANEL_HEIGHT = SCREEN_HEIGHT * 0.68;
 
-// MEDSI brand blue (matches smartmed.pro navbar)
-const MEDSI_BLUE = '#0055A5';
-const MEDSI_BLUE_LIGHT = '#1A6FBF';
+// МТС Деньги brand red
+const MEDSI_BLUE = '#E30611';
+const MEDSI_BLUE_LIGHT = '#CC0510';
 
 /** Chat-bubble icon drawn with plain Views — no external deps */
 function ChatBubbleIcon() {
@@ -186,7 +186,7 @@ export default function ChatOverlay({
             {/* Brand */}
             <View style={styles.headerBrand}>
               <View style={styles.headerDot} />
-              <Text style={styles.headerTitle}>Ассистент МЕДСИ</Text>
+              <Text style={styles.headerTitle}>Ассистент МТС Деньги</Text>
             </View>
 
             {/* Actions */}

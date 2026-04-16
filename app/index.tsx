@@ -16,7 +16,7 @@ const AUTH_CAPTURE_DELAY_MS = 3000;
 export default function IndexScreen() {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebViewAgentRef>(null);
-  const [currentUrl, setCurrentUrl] = useState('https://medsi.ru');
+  const [currentUrl, setCurrentUrl] = useState('https://online.mtsdengi.ru/');
   const [authRestoreScript, setAuthRestoreScript] = useState<string | undefined>(undefined);
   const [authReady, setAuthReady] = useState(false);
   const captureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

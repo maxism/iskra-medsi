@@ -7,6 +7,9 @@ import { classifyMessage, generateAction, StepHistory, isWarmedUp } from '../ser
 const MAX_STEPS = 20;
 const PAGE_LOAD_WAIT_MS = 2000;
 const MAX_CONSECUTIVE_ERRORS = 3;
+// How many times the agent may execute identical code on the same URL before we call it a loop.
+// 1 means "stop on first repeat"; 2 means "allow one retry of the same action".
+const MAX_LOOP_REPEATS = 2;
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -120,27 +123,28 @@ export function useWebViewAgent(
       const history: StepHistory[] = [];
       let consecutiveErrors = 0;
       let completed = false;
+      let stopReason = '';
+
+      console.log(`[Agent ▶] goal="${text.substring(0, 80)}" | max=${MAX_STEPS} steps`);
 
       try {
         // Classify: chat vs action vs read
         try {
           const classification = await classifyMessage(text);
+          console.log('[Agent] classification:', classification.type);
           if (classification.type === 'chat') {
             addMessage('agent', classification.response);
             return;
           }
-          // 'action' and 'read' both go through the browser agent loop
-          // 'read' means navigate + extract text; agent returns content in done:true description
         } catch {
-          // Classification failed — treat as action
+          console.log('[Agent] classification failed — treating as action');
         }
 
         for (let step = 0; step < MAX_STEPS; step++) {
+          const stepLabel = `[Step ${step + 1}/${MAX_STEPS}]`;
+
           // Wait for any in-progress page load before injecting anything.
-          // WKWebView silently drops injectJavaScript calls while the page is loading.
-          console.log('[Agent] step', step + 1, '— waiting for page load...');
           await webViewRef.current?.waitForPageLoad(6000);
-          console.log('[Agent] step', step + 1, '— page ready, capturing DOM');
 
           // Capture DOM snapshot
           let domSnapshot: DOMElement[] = [];
@@ -149,6 +153,7 @@ export function useWebViewAgent(
           } catch {
             // proceed with empty snapshot
           }
+          console.log(`${stepLabel} url=${currentUrlRef.current} | dom=${domSnapshot.length} elements`);
 
           // Ask LLM for next action
           const action = await generateAction(
@@ -158,31 +163,57 @@ export function useWebViewAgent(
             history,
           );
 
+          const codePreview = action.code
+            ? action.code.trim().split('\n')[0].substring(0, 100)
+            : '(нет кода)';
+          console.log(`${stepLabel} 🎯 ${action.description}`);
+          if (!action.done) console.log(`${stepLabel} 📝 ${codePreview}`);
+
           addMessage('agent', action.description);
 
           if (action.done) {
+            // If the final step includes code, execute it to capture
+            // window.__agentResult as the actual answer content.
+            if (action.code && action.code.trim()) {
+              console.log(`${stepLabel} ⚙️ executing final code to capture result`);
+              const finalResult = await executeJS(action.code);
+              if (finalResult.success && finalResult.value && finalResult.value.trim()) {
+                console.log(`${stepLabel} 📤 final value: "${finalResult.value.substring(0, 80)}"`);
+                addMessage('agent', finalResult.value);
+              }
+            }
             completed = true;
+            stopReason = 'done';
+            console.log(`${stepLabel} ✅ STOP: agent declared done`);
             break;
           }
 
           // Guard: LLM returned done:false but no executable code
           if (!action.code || !action.code.trim()) {
+            stopReason = 'no-code';
+            console.log(`${stepLabel} ⛔ STOP: LLM returned no executable code`);
             addMessage('error', 'Агент не сформировал действие. Попробуйте переформулировать запрос.');
             break;
           }
 
-          // Loop detection: same code on same URL as previous step
-          const lastStep = history[history.length - 1];
-          if (
-            lastStep &&
-            lastStep.code === action.code &&
-            lastStep.url === currentUrlRef.current
-          ) {
+          // Loop detection: count consecutive identical (code + url) attempts in history
+          let loopCount = 0;
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].code === action.code && history[i].url === currentUrlRef.current) {
+              loopCount++;
+            } else {
+              break;
+            }
+          }
+          if (loopCount >= MAX_LOOP_REPEATS) {
+            stopReason = 'loop';
+            console.log(`${stepLabel} 🔁 STOP: loop — same code ran ${loopCount}× on this URL`);
+            console.log(`${stepLabel}    repeated code: ${codePreview}`);
             addMessage('error', 'Агент повторяет одно и то же действие. Попробуйте переформулировать задачу.');
             break;
           }
 
-          // Execute the action (requestId is internal, LLM doesn't see it)
+          // Execute the action
           const result = await executeJS(action.code);
 
           history.push({
@@ -197,27 +228,37 @@ export function useWebViewAgent(
 
           if (!result.success) {
             consecutiveErrors++;
+            console.log(`${stepLabel} ✗ error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${result.error}`);
             addMessage('error', `Шаг ${step + 1}: ${result.error ?? 'неизвестная ошибка'}`);
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              stopReason = 'max-errors';
+              console.log(`${stepLabel} ⛔ STOP: ${MAX_CONSECUTIVE_ERRORS} consecutive errors`);
               addMessage('error', 'Слишком много ошибок подряд. Попробуйте переформулировать задачу или обновить страницу.');
               break;
             }
-            // Don't wait after error — LLM will try a different approach
             continue;
           } else {
             consecutiveErrors = 0;
+            const valPreview = result.value ? ` | value="${result.value.substring(0, 60)}"` : '';
+            console.log(`${stepLabel} ✓ success${valPreview}`);
           }
 
           // Wait for page to settle after successful action
           await new Promise<void>((r) => setTimeout(r, PAGE_LOAD_WAIT_MS));
         }
 
-        // Notify user if max steps reached without completion
+        if (!completed && !stopReason) {
+          stopReason = 'max-steps';
+          console.log(`[Agent] ⛔ STOP: reached max steps (${MAX_STEPS})`);
+        }
+        console.log(`[Agent ■] finished | reason=${stopReason || 'done'} | steps=${history.length}`);
+
         if (!completed && history.length > 0 && consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
           addMessage('agent', 'Достигнут лимит шагов. Задача может быть не завершена — попробуйте продолжить или уточнить запрос.');
         }
       } catch (err: unknown) {
         const errorMsg = err instanceof Error ? err.message : String(err);
+        console.log(`[Agent] ⛔ STOP: exception — ${errorMsg}`);
         addMessage('error', `Ошибка: ${errorMsg}`);
       } finally {
         setIsLoading(false);

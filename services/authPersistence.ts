@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const AUTH_KEY = '@smartmed_auth_v2';
+const AUTH_KEY = '@mtsdengi_auth_v1';
 const MAX_LS_VALUE_LEN = 4096; // skip bloated values (base64 images, etc.)
 const MAX_LS_KEYS = 50;
 

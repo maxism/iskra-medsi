@@ -1,5 +1,5 @@
 import { DOMElement } from '../components/WebViewAgent';
-import { SYSTEM_PROMPT } from '../constants/prompts';
+import { SYSTEM_PROMPT, CLASSIFY_PROMPT } from '../constants/prompts';
 import { retrieveContext, formatContextForPrompt } from './knowledge';
 
 // ── Provider detection ──────────────────────────────────────────────────────
@@ -49,8 +49,8 @@ function buildHeaders(): Record<string, string> {
   };
   if (IS_OPENROUTER) {
     // Recommended by OpenRouter for attribution / rate-limit tiers
-    headers['HTTP-Referer'] = 'https://medsi.ru';
-    headers['X-Title'] = 'Iskra-MEDSI';
+    headers['HTTP-Referer'] = 'https://mtsdengi.ru';
+    headers['X-Title'] = 'Iskra-MTSMoney';
   }
   return headers;
 }
@@ -88,27 +88,6 @@ function wrapNetworkError(err: unknown, url: string): Error {
   return err instanceof Error ? err : new Error(msg);
 }
 
-const CLASSIFY_PROMPT = `Ты классификатор для ассистента клиник МЕДСИ.
-
-Архитектура: smartmed.pro — запись, личный кабинет. medsi.ru — справочный сайт (читается из базы знаний, браузер не нужен).
-
-Определи тип запроса:
-- "action": нужно что-то СДЕЛАТЬ в SmartMed — записаться к врачу, выбрать время, найти врача, нажать кнопку
-- "read": нужно ПРОЧИТАТЬ и показать данные из SmartMed — уведомления, анализы, результаты, документы, записи, назначения, направления, медкарта
-- "chat": справочный вопрос — адрес клиники, специальности, цены, часы работы, что такое МЕДСИ — отвечай из базы знаний
-
-Примеры "action": "запишись к врачу", "забронируй время", "открой медкарту", "перейди в раздел".
-Примеры "read": "покажи уведомления", "что в моих анализах", "какие у меня назначения", "покажи мои документы", "последние записи", "результаты анализов".
-Примеры "chat": "где находится клиника", "какие врачи есть", "сколько стоит", "как записаться".
-
-ВАЖНО: chat-ответы пиши обычным текстом БЕЗ markdown — никаких **, ##, |, ---. Только текст и переносы строк.
-
-Ответь ТОЛЬКО валидным JSON (без markdown):
-{"type": "action"}
-или
-{"type": "read"}
-или
-{"type": "chat", "response": "ответ обычным текстом без markdown"}`;
 
 export type Classification =
   | { type: 'action' }

@@ -1,7 +1,7 @@
-import knowledge from '../knowledge/medsi-knowledge.json';
+import knowledge from '../knowledge/mtsdengi-knowledge.json';
 
 export interface KnowledgeChunk {
-  type: 'clinic' | 'specialty' | 'service' | 'faq' | 'booking' | 'program' | 'section';
+  type: 'product' | 'faq' | 'premium' | 'contact';
   title: string;
   content: string;
   url?: string;
@@ -30,45 +30,10 @@ function scoreEntry(queryTokens: string[], entry: KnowledgeEntry): number {
   let score = 0;
   for (const token of queryTokens) {
     if (token.length < 2) continue;
-    // Exact keyword match — high score
     if (keywords.some(k => k.toLowerCase().includes(token))) score += 3;
-    // Partial text match — lower score
     else if (fullText.includes(token)) score += 1;
   }
   return score;
-}
-
-function clinicToContent(clinic: typeof knowledge.clinics[number]): string {
-  const parts: string[] = [`Клиника: ${clinic.name}`];
-  if (clinic.address) parts.push(`Адрес: ${clinic.address}`);
-  if (clinic.metro?.length) parts.push(`Метро: ${clinic.metro.join(', ')}`);
-  if ('phone' in clinic && clinic.phone) parts.push(`Телефон: ${(clinic as { phone: string }).phone}`);
-  if ('hours' in clinic && (clinic as { hours?: string }).hours) parts.push(`Часы работы: ${(clinic as { hours: string }).hours}`);
-  if (clinic.booking_url) parts.push(`Запись: ${clinic.booking_url}`);
-  if ('features' in clinic && Array.isArray((clinic as { features?: string[] }).features)) {
-    parts.push(`Особенности: ${(clinic as { features: string[] }).features.join('; ')}`);
-  }
-  return parts.join('\n');
-}
-
-// Score SmartMed specialties against query
-function scoreSmartMedSpecialties(queryTokens: string[]): KnowledgeChunk | null {
-  const allSpecs = [
-    ...(knowledge.smartmed.specialties_clinic ?? []),
-    ...(knowledge.smartmed.specialties_online ?? []),
-  ];
-  const matched = allSpecs.filter(spec =>
-    queryTokens.some(t => t.length > 2 && spec.toLowerCase().includes(t))
-  );
-  if (matched.length === 0) return null;
-  const unique = [...new Set(matched)].slice(0, 8);
-  return {
-    type: 'specialty',
-    title: 'Специализации SmartMed',
-    content: `Доступные специализации для записи: ${unique.join(', ')}\nЗапись в клинику: ${knowledge.smartmed.navigation.appointment_clinic}\nОнлайн-консультация: ${knowledge.smartmed.navigation.online_consultation}`,
-    url: knowledge.smartmed.navigation.appointment_clinic,
-    score: 4,
-  };
 }
 
 export function retrieveContext(query: string, topK = 5): KnowledgeChunk[] {
@@ -77,59 +42,43 @@ export function retrieveContext(query: string, topK = 5): KnowledgeChunk[] {
 
   const results: KnowledgeChunk[] = [];
 
-  // Always include booking info for action queries
-  const bookingKeywords = ['запис', 'прием', 'приём', 'бронир', 'appointment', 'book'];
-  const isBookingQuery = tokens.some(t => bookingKeywords.some(k => t.includes(k)));
-  if (isBookingQuery) {
+  // Always include login info for auth-related queries
+  const authKeywords = ['войти', 'вход', 'логин', 'авториз', 'личный кабинет', 'зайти'];
+  const isAuthQuery = tokens.some(t => authKeywords.some(k => t.includes(k)));
+  if (isAuthQuery) {
     results.push({
-      type: 'booking',
-      title: 'Запись к врачу',
-      content: `Запись к врачу: нажать кнопку «Записаться на прием» или перейти на ${knowledge.booking.url_general}\nШаги: ${knowledge.booking.smartmed_login_flow.join(' → ')}\nТелефон: ${knowledge.booking.phone}`,
-      url: knowledge.booking.url_general,
+      type: 'faq',
+      title: 'Вход в личный кабинет',
+      content: `Вход в ЛК МТС Деньги: сайт online.mtsdengi.ru. Авторизация по номеру телефона + SMS-код. Приложение: МТС Деньги (App Store, Google Play).`,
+      url: knowledge.online_cabinet.base_url,
       score: 10,
     });
   }
 
-  // Score clinics
-  for (const clinic of knowledge.clinics) {
-    const score = scoreEntry(tokens, clinic as KnowledgeEntry);
+  // Score products
+  for (const product of knowledge.products) {
+    const score = scoreEntry(tokens, product as KnowledgeEntry);
     if (score > 0) {
       results.push({
-        type: 'clinic',
-        title: clinic.name,
-        content: clinicToContent(clinic),
-        url: clinic.page_url ?? clinic.booking_url,
+        type: 'product',
+        title: product.name,
+        content: `${product.summary}\n${product.details}`,
+        url: product.url,
         score,
       });
     }
   }
 
-  // Score specialties
-  for (const spec of knowledge.specialties) {
-    const score = scoreEntry(tokens, spec as KnowledgeEntry);
-    if (score > 0) {
-      results.push({
-        type: 'specialty',
-        title: spec.name,
-        content: `Специальность: ${spec.name}\nПоиск врачей: ${spec.search_url}`,
-        url: spec.search_url,
-        score,
-      });
-    }
-  }
-
-  // Score services
-  for (const svc of knowledge.services) {
-    const score = scoreEntry(tokens, svc as KnowledgeEntry);
-    if (score > 0) {
-      results.push({
-        type: 'service',
-        title: svc.name,
-        content: `Услуга: ${svc.name}\nСсылка: ${svc.search_url}`,
-        url: svc.search_url,
-        score,
-      });
-    }
+  // Score premium separately
+  const premiumScore = scoreEntry(tokens, knowledge.premium as KnowledgeEntry);
+  if (premiumScore > 0) {
+    results.push({
+      type: 'premium',
+      title: knowledge.premium.name,
+      content: `${knowledge.premium.summary}\n${knowledge.premium.details}`,
+      url: knowledge.premium.url,
+      score: premiumScore,
+    });
   }
 
   // Score FAQ
@@ -145,50 +94,19 @@ export function retrieveContext(query: string, topK = 5): KnowledgeChunk[] {
     }
   }
 
-  // Score programs
-  for (const prog of knowledge.programs) {
-    const score = scoreEntry(tokens, prog as KnowledgeEntry);
-    if (score > 0) {
-      results.push({
-        type: 'program',
-        title: prog.name,
-        content: `Программа: ${prog.name} — ${prog.description}\nСсылка: ${prog.url}`,
-        url: prog.url,
-        score,
-      });
-    }
-  }
-
-  // Score special sections
-  for (const section of knowledge.special_sections) {
-    const score = scoreEntry(tokens, section as KnowledgeEntry);
-    if (score > 0) {
-      results.push({
-        type: 'section',
-        title: section.name,
-        content: `Раздел: ${section.name}\nСсылка: ${section.url}`,
-        url: section.url,
-        score,
-      });
-    }
-  }
-
-  // Score SmartMed specialties
-  const smartmedChunk = scoreSmartMedSpecialties(tokens);
-  if (smartmedChunk) results.push(smartmedChunk);
-
-  // Include SmartMed navigation context for booking queries
-  if (isBookingQuery) {
+  // Score contacts for support/office queries
+  const contactKeywords = ['офис', 'поддержка', 'телефон', 'контакт', 'адрес', 'горячая линия'];
+  const isContactQuery = tokens.some(t => contactKeywords.some(k => t.includes(k)));
+  if (isContactQuery) {
     results.push({
-      type: 'section',
-      title: 'SmartMed — навигация',
-      content: `SmartMed разделы:\n- Запись в клинику: ${knowledge.smartmed.navigation.appointment_clinic}\n- Онлайн-консультация: ${knowledge.smartmed.navigation.online_consultation}\n- Список клиник: ${knowledge.smartmed.base_url}${knowledge.smartmed.navigation.clinics}\n- Врачи: ${knowledge.smartmed.base_url}${knowledge.smartmed.navigation.doctors}\n- Медкарта: ${knowledge.smartmed.base_url}${knowledge.smartmed.navigation.medical_card}`,
-      url: knowledge.smartmed.navigation.appointment_clinic,
-      score: 8,
+      type: 'contact',
+      title: 'Контакты МТС Деньги',
+      content: `Поддержка: ${knowledge.contacts.support_url}\nОфисы и банкоматы: ${knowledge.contacts.offices_url}\nЮридический адрес: ${knowledge.contacts.legal_address}\nСоциальные сети: ${knowledge.contacts.social.join(', ')}`,
+      url: knowledge.contacts.offices_url,
+      score: 5,
     });
   }
 
-  // Sort by score descending, take topK
   results.sort((a, b) => b.score - a.score);
   return results.slice(0, topK);
 }
@@ -196,6 +114,6 @@ export function retrieveContext(query: string, topK = 5): KnowledgeChunk[] {
 // Format retrieved chunks as a compact string for injection into LLM prompt
 export function formatContextForPrompt(chunks: KnowledgeChunk[]): string {
   if (chunks.length === 0) return '';
-  return '## Контекст из базы знаний МЕДСИ:\n' +
+  return '## Контекст из базы знаний МТС Деньги:\n' +
     chunks.map(c => `[${c.title}]\n${c.content}`).join('\n\n');
 }
