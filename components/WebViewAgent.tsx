@@ -53,8 +53,7 @@ interface Props {
 }
 
 // Desktop macOS Safari UA — no "Mobile" token, so the site's mobile/PWA guard
-// never redirects to /pwa. The actual WebView viewport (device width) still
-// triggers mobile CSS via media queries, so the layout stays touch-friendly.
+// never redirects to /pwa.
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) ' +
   'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15';
 
