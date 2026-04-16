@@ -14,6 +14,7 @@ export interface WebViewMessage {
   error?: string;
   snapshot?: DOMElement[];
   message?: string;
+  level?: 'log' | 'warn' | 'error' | 'info';
   /** Captured value of window.__agentResult set by agent code */
   value?: string;
   /** Auth snapshot fields (type === 'authSnapshot') */
@@ -51,6 +52,72 @@ interface Props {
   onAuthSnapshot?: (cookies: string, ls: Record<string, string>) => void;
 }
 
+// Desktop macOS Safari UA — no "Mobile" token, so the site's mobile/PWA guard
+// never redirects to /pwa. The actual WebView viewport (device width) still
+// triggers mobile CSS via media queries, so the layout stays touch-friendly.
+const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) ' +
+  'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15';
+
+/**
+ * Runs before page scripts (injectedJavaScriptBeforeContentLoaded).
+ * 1. Hides window.ReactNativeWebView from page scripts (replaced by window.__rnwv).
+ * 2. Overrides navigator properties to match the desktop UA sent in HTTP headers.
+ */
+const PRELOAD_SCRIPT = `
+(function() {
+  // Hide the RN bridge from page scripts — use window.__rnwv internally instead.
+  if (window.ReactNativeWebView) {
+    window.__rnwv = window.ReactNativeWebView;
+    try {
+      Object.defineProperty(window, 'ReactNativeWebView', {
+        get: function() { return undefined; },
+        set: function() {},
+        enumerable: false,
+        configurable: true,
+      });
+    } catch(e) {}
+  }
+
+  // Match navigator JS properties to the desktop UA we send in HTTP headers.
+  var _ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Safari/605.1.15';
+  try { Object.defineProperty(navigator, 'userAgent',      { get: function(){ return _ua; }, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(navigator, 'appVersion',     { get: function(){ return _ua.replace('Mozilla/',''); }, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(navigator, 'platform',       { get: function(){ return 'MacIntel'; }, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(navigator, 'vendor',         { get: function(){ return 'Apple Computer, Inc.'; }, configurable: true }); } catch(e) {}
+  try { Object.defineProperty(navigator, 'maxTouchPoints', { get: function(){ return 0; }, configurable: true }); } catch(e) {}
+  try { if (!window.outerWidth)  Object.defineProperty(window, 'outerWidth',  { get: function(){ return window.innerWidth; },  configurable: true }); } catch(e) {}
+  try { if (!window.outerHeight) Object.defineProperty(window, 'outerHeight', { get: function(){ return window.innerHeight; }, configurable: true }); } catch(e) {}
+})();
+`;
+
+/** Forwards console.log/warn/error/info from the WebView page to Metro. */
+const CONSOLE_FORWARD_SCRIPT = `
+(function() {
+  var _rnwv = function() { return window.__rnwv || window.ReactNativeWebView; };
+  var _send = function(level, msg) {
+    try {
+      var rn = _rnwv();
+      if (rn) rn.postMessage(JSON.stringify({ type: 'log', level: level, message: msg }));
+    } catch(e) {}
+  };
+  var _wrap = function(level, orig) {
+    return function() {
+      try { orig.apply(console, arguments); } catch(e) {}
+      try {
+        var args = Array.from(arguments).map(function(a) {
+          try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
+        });
+        _send(level, args.join(' '));
+      } catch(e) {}
+    };
+  };
+  console.log   = _wrap('log',   console.log);
+  console.warn  = _wrap('warn',  console.warn);
+  console.error = _wrap('error', console.error);
+  console.info  = _wrap('info',  console.info);
+})();
+`;
+
 const BOOTSTRAP_SCRIPT = `
 (function() {
   if (window.__agentBootstrapped) return;
@@ -70,18 +137,15 @@ const BOOTSTRAP_SCRIPT = `
     return null;
   }
 
-  // Direct DOM capture — called from RN-injected scripts without window.postMessage hop
   window.__agentCaptureDOM = function(requestId) {
     try {
       var selectors = 'button, input, a, select, textarea, [role="button"], [onclick], [data-automation-id]';
-      var skipAutoIds = { 'smed-svg-icon': true, 'home-navbar': true, 'home-footer': true, 'new-appointment-page': true, 'smed-icon': true, 'smed-base-input-left-icon': true, 'smed-base-input-label': true, 'date-stepper-carousel': true };
       var elements = Array.from(document.querySelectorAll(selectors));
       var seen = {};
       var snapshot = [];
       for (var i = 0; i < elements.length && snapshot.length < 80; i++) {
         var el = elements[i];
         var autoId = el.getAttribute('data-automation-id') || '';
-        if (autoId && skipAutoIds[autoId]) continue;
         var rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
         var text = (el.textContent || el.innerText || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
@@ -103,14 +167,14 @@ const BOOTSTRAP_SCRIPT = `
         if (sel) item.sel = sel;
         snapshot.push(item);
       }
-      window.ReactNativeWebView.postMessage(JSON.stringify({
+      (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
         type: 'domSnapshot',
         requestId: requestId,
         snapshot: snapshot
       }));
     } catch(e) {
       try {
-        window.ReactNativeWebView.postMessage(JSON.stringify({
+        (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
           type: 'domSnapshot',
           requestId: requestId,
           snapshot: []
@@ -119,7 +183,7 @@ const BOOTSTRAP_SCRIPT = `
     }
   };
 
-  // Auth capture via window.message listener (RN sends window.postMessage)
+  // Auth capture — triggered by captureAuth() injecting a window.postMessage
   window.addEventListener('message', function(event) {
     try {
       var data = JSON.parse(event.data);
@@ -133,7 +197,7 @@ const BOOTSTRAP_SCRIPT = `
         } catch(lsErr) {}
         var cookies = '';
         try { cookies = document.cookie; } catch(cErr) {}
-        window.ReactNativeWebView.postMessage(JSON.stringify({
+        (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
           type: 'authSnapshot',
           cookies: cookies,
           localStorage: ls
@@ -146,10 +210,8 @@ true;
 `;
 
 /**
- * Runs after every page load (injectedJavaScript).
- * Locks the viewport so iOS WKWebView never auto-zooms on input focus.
- * SmartMed's own viewport meta is overwritten — the SPA still works fine,
- * it just can't be pinch-zoomed or auto-zoomed by the OS keyboard heuristic.
+ * Runs after every page load. Locks the viewport so iOS WKWebView never
+ * auto-zooms on input focus.
  */
 const ZOOM_LOCK_SCRIPT = `
 (function() {
@@ -185,7 +247,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
             var __val = (window.__agentResult != null)
               ? String(window.__agentResult).substring(0, 4000)
               : null;
-            window.ReactNativeWebView.postMessage(JSON.stringify({
+            (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
               type: 'result',
               requestId: ${reqJson},
               success: true,
@@ -193,7 +255,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
             }));
           } catch(e) {
             try {
-              window.ReactNativeWebView.postMessage(JSON.stringify({
+              (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
                 type: 'result',
                 requestId: ${reqJson},
                 success: false,
@@ -215,7 +277,7 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
             window.__agentCaptureDOM(${reqJson});
           } else {
             try {
-              window.ReactNativeWebView.postMessage(JSON.stringify({
+              (window.__rnwv||window.ReactNativeWebView).postMessage(JSON.stringify({
                 type: 'domSnapshot',
                 requestId: ${reqJson},
                 snapshot: []
@@ -247,10 +309,8 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     }, []);
 
     const waitForPageLoad = useCallback((timeoutMs = 6000): Promise<void> => {
-      // If the WebView is not currently loading a page, resolve immediately.
       if (!isPageLoadingRef.current) return Promise.resolve();
       return new Promise<void>((resolve) => {
-        // Fallback: always resolve after timeoutMs even if onLoadEnd never fires.
         const timer = setTimeout(() => {
           pageLoadResolversRef.current = pageLoadResolversRef.current.filter(fn => fn !== onLoaded);
           resolve();
@@ -275,9 +335,15 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
     const handleMessage = useCallback((event: WebViewMessageEvent) => {
       try {
         const data: WebViewMessage = JSON.parse(event.nativeEvent.data);
-        // Auth snapshots are handled here directly — not routed to the agent
         if (data.type === 'authSnapshot') {
           onAuthSnapshotRef.current?.(data.cookies ?? '', data.localStorage ?? {});
+          return;
+        }
+        if (data.type === 'log') {
+          const prefix = `[Page:${data.level ?? 'log'}]`;
+          if (data.level === 'error') console.error(prefix, data.message);
+          else if (data.level === 'warn') console.warn(prefix, data.message);
+          else console.log(prefix, data.message);
           return;
         }
         messageHandlerRef.current?.(data);
@@ -286,37 +352,31 @@ const WebViewAgent = forwardRef<WebViewAgentRef, Props>(
       }
     }, []);
 
-    // Auth restore runs BEFORE page scripts; BOOTSTRAP must also be present
+    // Auth restore runs BEFORE page scripts so tokens are available immediately.
     const fullPreloadScript = authRestoreScript
-      ? authRestoreScript + '\n' + BOOTSTRAP_SCRIPT
-      : BOOTSTRAP_SCRIPT;
+      ? authRestoreScript + '\n' + PRELOAD_SCRIPT + '\n' + CONSOLE_FORWARD_SCRIPT + '\n' + BOOTSTRAP_SCRIPT
+      : PRELOAD_SCRIPT + '\n' + CONSOLE_FORWARD_SCRIPT + '\n' + BOOTSTRAP_SCRIPT;
 
     return (
       <WebView
         ref={webViewRef}
         source={{ uri: 'https://online.mtsdengi.ru/' }}
         style={styles.webview}
+        userAgent={DESKTOP_UA}
         injectedJavaScriptBeforeContentLoaded={fullPreloadScript}
         injectedJavaScript={ZOOM_LOCK_SCRIPT + BOOTSTRAP_SCRIPT + '\ntrue;'}
         onMessage={handleMessage}
-        onLoadStart={() => {
-          isPageLoadingRef.current = true;
-          console.log('[WebView] page load start');
-        }}
+        onLoadStart={() => { isPageLoadingRef.current = true; }}
         onLoadEnd={() => {
           isPageLoadingRef.current = false;
-          console.log('[WebView] page load end');
           const resolvers = pageLoadResolversRef.current.splice(0);
           resolvers.forEach(fn => fn());
         }}
         onNavigationStateChange={(navState) => {
-          if (navState.url) {
-            onNavigationStateChange?.(navState.url);
-          }
+          if (navState.url) onNavigationStateChange?.(navState.url);
         }}
         javaScriptEnabled
         domStorageEnabled
-        // Share cookies with iOS WKHTTPCookieStorage — survives app restarts
         sharedCookiesEnabled
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
