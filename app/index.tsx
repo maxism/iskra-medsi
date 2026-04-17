@@ -8,6 +8,8 @@ import {
   loadAuthSnapshot,
   saveAuthSnapshot,
   buildAuthRestoreScript,
+  clearAuthSnapshot,
+  AUTH_PERSISTENCE_ENABLED,
 } from '../services/authPersistence';
 
 // Delay before capturing auth after a URL change (let the SPA settle)
@@ -23,12 +25,17 @@ export default function IndexScreen() {
 
   // Load saved auth on mount — WebView renders after this resolves
   useEffect(() => {
-    loadAuthSnapshot().then((snap) => {
-      if (snap) {
-        setAuthRestoreScript(buildAuthRestoreScript(snap));
+    (async () => {
+      if (!AUTH_PERSISTENCE_ENABLED) {
+        await clearAuthSnapshot();
+        setAuthReady(true);
+        return;
       }
+
+      const snap = await loadAuthSnapshot();
+      if (snap) setAuthRestoreScript(buildAuthRestoreScript(snap));
       setAuthReady(true);
-    });
+    })();
   }, []);
 
   const { messages, isLoading, sendMessage, clearMessages } = useWebViewAgent(

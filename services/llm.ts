@@ -88,26 +88,24 @@ function wrapNetworkError(err: unknown, url: string): Error {
   return err instanceof Error ? err : new Error(msg);
 }
 
+export interface LLMChatOptions {
+  max_tokens: number;
+  temperature: number;
+}
 
-export type Classification =
-  | { type: 'action' }
-  | { type: 'read' }
-  | { type: 'chat'; response: string };
-
-export async function classifyMessage(text: string): Promise<Classification> {
+/**
+ * Low-level helper for chat/completions. Returns raw assistant content.
+ * Use this for new features (e.g. PFM NLQ) to share the same provider config.
+ */
+export async function llmChatCompletion(
+  systemContent: string,
+  userContent: string,
+  options: LLMChatOptions,
+): Promise<string> {
   const controller = new AbortController();
   const timerId = setTimeout(() => controller.abort(), getTimeout());
-
-  // Retrieve relevant context to help with classification and direct answers
-  const chunks = retrieveContext(text, 4);
-  const contextBlock = formatContextForPrompt(chunks);
-  const systemWithContext = [
-    buildDateContext(),
-    CLASSIFY_PROMPT,
-    contextBlock,
-  ].filter(Boolean).join('\n\n');
-
   const endpoint = `${BASE_URL}/chat/completions`;
+
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -116,11 +114,11 @@ export async function classifyMessage(text: string): Promise<Classification> {
       body: JSON.stringify({
         model: MODEL,
         messages: [
-          { role: 'system', content: systemWithContext },
-          { role: 'user', content: text },
+          { role: 'system', content: systemContent },
+          { role: 'user', content: userContent },
         ],
-        max_tokens: 512,
-        temperature: 0,
+        max_tokens: options.max_tokens,
+        temperature: options.temperature,
       }),
     });
 
@@ -134,16 +132,38 @@ export async function classifyMessage(text: string): Promise<Classification> {
     };
 
     const raw = (data.choices?.[0]?.message?.content ?? '').trim();
-    console.log('[LLM] Classification response:', raw);
-    const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
-    const result = JSON.parse(cleaned) as Classification;
-    isWarmedUp = true; // model responded — mark as warm for this session
-    return result;
+    isWarmedUp = true;
+    return raw;
   } catch (err) {
     throw wrapNetworkError(err, endpoint);
   } finally {
     clearTimeout(timerId);
   }
+}
+
+
+export type Classification =
+  | { type: 'action' }
+  | { type: 'read' }
+  | { type: 'chat'; response: string };
+
+export async function classifyMessage(text: string): Promise<Classification> {
+  // Retrieve relevant context to help with classification and direct answers
+  const chunks = retrieveContext(text, 4);
+  const contextBlock = formatContextForPrompt(chunks);
+  const systemWithContext = [
+    buildDateContext(),
+    CLASSIFY_PROMPT,
+    contextBlock,
+  ].filter(Boolean).join('\n\n');
+  try {
+    const raw = await llmChatCompletion(systemWithContext, text, { max_tokens: 512, temperature: 0 });
+    console.log('[LLM] Classification response:', raw);
+    const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/i, '').trim();
+    const result = JSON.parse(cleaned) as Classification;
+    return result;
+  }
+  catch (err) { throw err; }
 }
 
 export interface AgentAction {
@@ -205,38 +225,13 @@ export async function generateAction(
 DOM (интерактивные элементы):
 ${domText}`;
 
-  const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), getTimeout());
-
-  const endpoint = `${BASE_URL}/chat/completions`;
   try {
-    console.log('[LLM] generateAction →', endpoint, '| steps:', history.length);
-
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: buildHeaders(),
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: 'system', content: `${buildDateContext()}\n\n${SYSTEM_PROMPT}` },
-          { role: 'user', content: userMessage },
-        ],
-        max_tokens: 2048,
-        temperature: 0,
-      }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`LLM API error ${response.status}: ${body}`);
-    }
-
-    const data = await response.json() as {
-      choices: Array<{ message: { content: string } }>;
-    };
-
-    const raw = (data.choices?.[0]?.message?.content ?? '').trim();
+    console.log('[LLM] generateAction | steps:', history.length);
+    const raw = await llmChatCompletion(
+      `${buildDateContext()}\n\n${SYSTEM_PROMPT}`,
+      userMessage,
+      { max_tokens: 2048, temperature: 0 },
+    );
     console.log('[LLM] generateAction raw:', raw.substring(0, 500));
 
     // Strip markdown code fences if present
@@ -263,9 +258,5 @@ ${domText}`;
     if (typeof parsed.done !== 'boolean') parsed.done = false;
 
     return parsed;
-  } catch (err) {
-    throw wrapNetworkError(err, endpoint);
-  } finally {
-    clearTimeout(timerId);
-  }
+  } catch (err) { throw err; }
 }

@@ -3,6 +3,9 @@ import { RefObject } from 'react';
 import { WebViewAgentRef, WebViewMessage, DOMElement } from '../components/WebViewAgent';
 import { Message, MessageRole } from '../components/ChatMessage';
 import { classifyMessage, generateAction, StepHistory, isWarmedUp } from '../services/llm';
+import { parsePFMQuery } from '../services/pfm/nlq';
+import { runPFMQueryCached } from '../services/pfm/analytics';
+import { formatPFMAnswer } from '../services/pfm/answer';
 
 const MAX_STEPS = 20;
 const PAGE_LOAD_WAIT_MS = 2000;
@@ -128,6 +131,19 @@ export function useWebViewAgent(
       console.log(`[Agent ▶] goal="${text.substring(0, 80)}" | max=${MAX_STEPS} steps`);
 
       try {
+        // ── PFM (spend analytics) path ───────────────────────────────────────
+        // If the question is about personal spending, answer locally from JSON dump.
+        try {
+          const pfmQuery = await parsePFMQuery(text);
+          if (pfmQuery) {
+            const result = runPFMQueryCached(pfmQuery);
+            addMessage('agent', formatPFMAnswer(result));
+            return;
+          }
+        } catch (e) {
+          console.log('[PFM] failed, falling back to web agent:', e);
+        }
+
         // Classify: chat vs action vs read
         try {
           const classification = await classifyMessage(text);

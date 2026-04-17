@@ -4,6 +4,12 @@ const AUTH_KEY = '@mtsdengi_auth_v1';
 const MAX_LS_VALUE_LEN = 4096; // skip bloated values (base64 images, etc.)
 const MAX_LS_KEYS = 50;
 
+/**
+ * Test mode: disable saving/restoring auth snapshots.
+ * Flip to false when you want persistence back.
+ */
+export const AUTH_PERSISTENCE_ENABLED = false;
+
 export interface AuthSnapshot {
   cookies: string;
   localStorage: Record<string, string>;
@@ -11,6 +17,7 @@ export interface AuthSnapshot {
 }
 
 export async function saveAuthSnapshot(snapshot: AuthSnapshot): Promise<void> {
+  if (!AUTH_PERSISTENCE_ENABLED) return;
   try {
     await AsyncStorage.setItem(AUTH_KEY, JSON.stringify(snapshot));
     console.log('[Auth] Saved. localStorage keys:', Object.keys(snapshot.localStorage).length);
@@ -20,6 +27,7 @@ export async function saveAuthSnapshot(snapshot: AuthSnapshot): Promise<void> {
 }
 
 export async function loadAuthSnapshot(): Promise<AuthSnapshot | null> {
+  if (!AUTH_PERSISTENCE_ENABLED) return null;
   try {
     const raw = await AsyncStorage.getItem(AUTH_KEY);
     if (!raw) return null;
