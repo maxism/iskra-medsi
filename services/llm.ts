@@ -225,6 +225,8 @@ export async function generateAction(
 DOM (интерактивные элементы):
 ${domText}`;
 
+  const FORMAT_REMINDER = `\n\nВАЖНО: Ответь ТОЛЬКО валидным JSON — обязательно с полем "code" содержащим JavaScript. Описание без кода не принимается. Пример:\n{"description":"Заполняю номер","code":"var nativeSet=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;var inp=document.querySelector('input[data-testid=\"phoneNumber\"]');if(inp){nativeSet.call(inp,'+79165548223');inp.dispatchEvent(new Event('input',{bubbles:true}));}","done":false}`;
+
   try {
     console.log('[LLM] generateAction | steps:', history.length);
     const raw = await llmChatCompletion(
@@ -234,7 +236,23 @@ ${domText}`;
     );
     console.log('[LLM] generateAction raw:', raw.substring(0, 500));
 
-    return parseActionResponse(raw);
+    const result = parseActionResponse(raw);
+
+    // Retry once if the model returned prose with no executable code
+    if (!result.done && !result.code.trim()) {
+      console.warn('[LLM] generateAction: no code in response, retrying with format reminder');
+      const retryRaw = await llmChatCompletion(
+        `${buildDateContext()}\n\n${SYSTEM_PROMPT}`,
+        userMessage + FORMAT_REMINDER,
+        { max_tokens: 2048, temperature: 0 },
+      );
+      console.log('[LLM] generateAction retry raw:', retryRaw.substring(0, 500));
+      const retryResult = parseActionResponse(retryRaw);
+      if (retryResult.code.trim()) return retryResult;
+      // If still no code, return the original result so the agent can handle it
+    }
+
+    return result;
   } catch (err) { throw err; }
 }
 
