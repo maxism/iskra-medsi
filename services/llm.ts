@@ -234,29 +234,71 @@ ${domText}`;
     );
     console.log('[LLM] generateAction raw:', raw.substring(0, 500));
 
-    // Strip markdown code fences if present
-    let cleaned = raw
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    // If there is text before/after the JSON object, extract just the object
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (jsonMatch) cleaned = jsonMatch[0];
-
-    let parsed: { description: string; code: string; done: boolean };
-    try {
-      parsed = JSON.parse(cleaned) as typeof parsed;
-    } catch (parseErr) {
-      console.error('[LLM] JSON parse failed. Raw was:', raw);
-      throw new Error(`LLM вернул невалидный JSON: ${raw.substring(0, 200)}`);
-    }
-
-    // Normalise: ensure required fields exist
-    if (!parsed.description) parsed.description = 'Выполняю действие…';
-    if (parsed.code == null) parsed.code = '';
-    if (typeof parsed.done !== 'boolean') parsed.done = false;
-
-    return parsed;
+    return parseActionResponse(raw);
   } catch (err) { throw err; }
+}
+
+/**
+ * Robust parser for LLM action responses.
+ * Handles three formats:
+ *   1. Pure JSON {"description":..., "code":..., "done":...}
+ *   2. Prose text + ```javascript ... ``` block (model ignored JSON instruction)
+ *   3. Pure prose (no code) — treated as description with no action
+ */
+function parseActionResponse(raw: string): AgentAction {
+  // Strip top-level json fence if present
+  const stripped = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  // Try 1: find JSON object anywhere in the response
+  const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as Partial<AgentAction>;
+      if (parsed.description || parsed.code) {
+        return {
+          description: parsed.description || 'Выполняю действие…',
+          code: sanitizeCode(parsed.code ?? ''),
+          done: typeof parsed.done === 'boolean' ? parsed.done : false,
+        };
+      }
+    } catch {
+      // fall through to prose parsing
+    }
+  }
+
+  // Try 2: prose + ```javascript / ```js code block
+  const codeBlockMatch = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i);
+  if (codeBlockMatch) {
+    const code = codeBlockMatch[1].trim();
+    // Description = text before first ``` (trimmed, first 200 chars)
+    const beforeCode = raw.slice(0, raw.indexOf('```')).trim();
+    const description = beforeCode.split('\n').map(l => l.trim()).filter(Boolean).join(' ').substring(0, 200) || 'Выполняю действие…';
+    console.warn('[LLM] Parsed as prose+codeblock (model ignored JSON format)');
+    return { description, code: sanitizeCode(code), done: false };
+  }
+
+  // Try 3: pure prose — no executable code
+  console.warn('[LLM] No JSON or code block found. Raw:', raw.substring(0, 200));
+  const description = raw.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 2).join(' ').substring(0, 200) || 'Агент не сформировал действие.';
+  return { description, code: '', done: false };
+}
+
+/**
+ * Strip setTimeout wrappers from generated code — the WebView reads
+ * window.__agentResult synchronously after execution, so async results
+ * are never captured. Replace with direct sequential code.
+ */
+function sanitizeCode(code: string): string {
+  // Remove setTimeout(() => { ... }, N) wrappers — flatten to direct calls
+  // This is a best-effort transform: remove the outermost setTimeout if the
+  // entire code is wrapped in one.
+  const singleTimeout = code.match(/^setTimeout\s*\(\s*function\s*\(\s*\)\s*\{([\s\S]*)\}\s*,\s*\d+\s*\)\s*;?\s*$/);
+  if (singleTimeout) {
+    return singleTimeout[1].trim();
+  }
+  // If code contains nested setTimeouts inside other logic, leave it — too risky to rewrite
+  return code;
 }
